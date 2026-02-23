@@ -56,10 +56,10 @@ impl SkillManager {
 
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                if let Ok(skill) = self.load_skill(&path).await {
-                    self.skills.push(skill);
-                }
+            if path.extension().and_then(|e| e.to_str()) == Some("md")
+                && let Ok(skill) = self.load_skill(&path).await
+            {
+                self.skills.push(skill);
             }
         }
 

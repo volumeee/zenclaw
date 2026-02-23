@@ -54,7 +54,7 @@ impl SessionManager {
         let mut sessions = self.sessions.lock().unwrap();
         sessions
             .entry(key.to_string())
-            .or_insert_with(Session::new)
+            .or_default()
             .clone()
     }
 

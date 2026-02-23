@@ -85,10 +85,10 @@ impl AgentRouter {
         }
 
         // Fall back to default or first agent
-        if let Some(ref default_name) = self.default_agent {
-            if let Some(slot) = self.agents.iter().find(|s| s.name == *default_name) {
-                return slot;
-            }
+        if let Some(ref default_name) = self.default_agent
+            && let Some(slot) = self.agents.iter().find(|s| s.name == *default_name)
+        {
+            return slot;
         }
 
         // Absolute fallback — first registered agent

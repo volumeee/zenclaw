@@ -2,11 +2,13 @@
 //!
 //! Full AI agent implementation with providers, tools, persistent memory,
 //! channel adapters (Telegram, Discord, WhatsApp), skills, plugins, RAG,
-//! multi-agent router, REST API server, and auto-updater.
+//! multi-agent router, REST API server, middleware, metrics, and auto-updater.
 
 pub mod api;
 pub mod channels;
 pub mod memory;
+pub mod metrics;
+pub mod middleware;
 pub mod plugins;
 pub mod providers;
 pub mod router;

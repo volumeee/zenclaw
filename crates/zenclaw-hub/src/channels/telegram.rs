@@ -96,9 +96,9 @@ impl TelegramChannel {
 
                                 // Check allowed users
                                 if !allowed_users.is_empty()
-                                    && !allowed_users.contains(&msg.from_id())
+                                    && !allowed_users.contains(&msg.sender_id())
                                 {
-                                    warn!("Blocked user: {}", msg.from_id());
+                                    warn!("Blocked user: {}", msg.sender_id());
                                     continue;
                                 }
 
@@ -113,7 +113,7 @@ impl TelegramChannel {
                                 info!(
                                     "📨 [{}] {}: {}",
                                     chat_id,
-                                    msg.from_name(),
+                                    msg.sender_name(),
                                     if text.len() > 80 { &text[..80] } else { &text }
                                 );
 
@@ -265,11 +265,11 @@ struct TgMessage {
 }
 
 impl TgMessage {
-    fn from_id(&self) -> i64 {
+    fn sender_id(&self) -> i64 {
         self.from.as_ref().map(|u| u.id).unwrap_or(0)
     }
 
-    fn from_name(&self) -> String {
+    fn sender_name(&self) -> String {
         self.from
             .as_ref()
             .map(|u| {

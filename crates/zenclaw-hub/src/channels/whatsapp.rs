@@ -133,7 +133,7 @@ impl WhatsAppChannel {
         info!("🔗 Bridge: {}", self.bridge_url);
 
         // Check bridge connectivity
-        match self.client.get(&format!("{}/status", self.bridge_url)).send().await {
+        match self.client.get(format!("{}/status", self.bridge_url)).send().await {
             Ok(resp) if resp.status().is_success() => {
                 info!("✅ Bridge connected");
             }

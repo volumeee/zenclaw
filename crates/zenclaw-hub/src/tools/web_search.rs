@@ -224,14 +224,14 @@ fn strip_html_tags(html: &str) -> String {
 /// Clean DuckDuckGo redirect URL to get the actual URL.
 fn clean_ddg_url(url: &str) -> String {
     // DDG wraps URLs like: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com...
-    if url.contains("uddg=") {
-        if let Some(start) = url.find("uddg=") {
-            let encoded = &url[start + 5..];
-            let end = encoded.find('&').unwrap_or(encoded.len());
-            let encoded_url = &encoded[..end];
-            // URL decode
-            return url_decode(encoded_url);
-        }
+    if url.contains("uddg=")
+        && let Some(start) = url.find("uddg=")
+    {
+        let encoded = &url[start + 5..];
+        let end = encoded.find('&').unwrap_or(encoded.len());
+        let encoded_url = &encoded[..end];
+        // URL decode
+        return url_decode(encoded_url);
     }
 
     // Also handle direct URLs

@@ -8,6 +8,7 @@ pub mod health;
 pub mod history;
 pub mod indexer;
 pub mod webhook;
+pub mod env;
 
 pub use shell::ShellTool;
 pub use filesystem::{ReadFileTool, WriteFileTool, EditFileTool, ListDirTool};
@@ -19,3 +20,4 @@ pub use health::HealthTool;
 pub use history::HistoryTool;
 pub use indexer::IndexerTool;
 pub use webhook::{WebhookTool, WebhookStore, new_webhook_store};
+pub use env::EnvTool;

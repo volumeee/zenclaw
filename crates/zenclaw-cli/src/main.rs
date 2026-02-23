@@ -22,8 +22,8 @@ use zenclaw_hub::providers::OpenAiProvider;
 use zenclaw_hub::skills::SkillManager;
 use zenclaw_hub::plugins::PluginManager;
 use zenclaw_hub::tools::{
-    CronTool, EditFileTool, HealthTool, HistoryTool, ListDirTool, ReadFileTool, ShellTool,
-    SystemInfoTool, WebFetchTool, WebSearchTool, WriteFileTool,
+    CronTool, EditFileTool, EnvTool, HealthTool, HistoryTool, ListDirTool, ReadFileTool,
+    ShellTool, SystemInfoTool, WebFetchTool, WebSearchTool, WriteFileTool,
 };
 
 // ─── CLI Definition ────────────────────────────────────────
@@ -250,10 +250,10 @@ fn resolve_api_key(provided: Option<&str>, provider: &str) -> Option<String> {
     };
 
     for var in env_vars {
-        if let Ok(val) = std::env::var(var) {
-            if !val.is_empty() {
-                return Some(val);
-            }
+        if let Ok(val) = std::env::var(var)
+            && !val.is_empty()
+        {
+            return Some(val);
         }
     }
 
@@ -333,7 +333,7 @@ fn resolve_config(
                  • Set {} environment variable\n\
                  • Pass {}",
                 "zenclaw setup".cyan(),
-                format!("zenclaw config set api_key <KEY>").cyan(),
+                "zenclaw config set api_key <KEY>".cyan(),
                 match provider_name.as_str() {
                     "openai" => "OPENAI_API_KEY",
                     "gemini" => "GEMINI_API_KEY",
@@ -381,6 +381,7 @@ async fn build_agent(model: &str, skill_prompt: Option<&str>) -> Agent {
     agent.tools.register(CronTool::new());
     agent.tools.register(HealthTool::new());
     agent.tools.register(HistoryTool::new());
+    agent.tools.register(EnvTool::new());
 
     // Load plugins
     let data = setup::data_dir();
@@ -1131,14 +1132,11 @@ async fn run_whatsapp(
 
 async fn run_update_check() -> anyhow::Result<()> {
     print_banner();
-    println!("  {} Checking for updates...\n", "🔄".to_string());
+    println!("  🔄 Checking for updates...\n");
 
     match zenclaw_hub::updater::check_for_updates().await {
         Ok(Some(info)) => {
-            println!(
-                "  {} New version available!",
-                "🆕".to_string()
-            );
+            println!("  🆕 New version available!");
             println!("     Current: v{}", info.current);
             println!("     Latest:  v{}", info.latest.green().bold());
             println!("     URL:     {}", info.url.cyan());
@@ -1162,13 +1160,12 @@ async fn run_update_check() -> anyhow::Result<()> {
         }
         Ok(None) => {
             println!(
-                "  {} You're on the latest version! (v{})",
-                "✅",
+                "  ✅ You're on the latest version! (v{})",
                 env!("CARGO_PKG_VERSION")
             );
         }
         Err(e) => {
-            println!("  {} Unable to check for updates: {}", "⚠️", e.to_string().dimmed());
+            println!("  ⚠️ Unable to check for updates: {}", e.to_string().dimmed());
         }
     }
 

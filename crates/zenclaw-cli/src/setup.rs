@@ -171,7 +171,7 @@ pub fn run_setup() -> anyhow::Result<()> {
     println!();
 
     let model_idx = Select::with_theme(&theme)
-        .items(&provider.models.to_vec())
+        .items(provider.models)
         .default(0)
         .interact()?;
 
@@ -216,7 +216,7 @@ pub fn run_setup() -> anyhow::Result<()> {
         println!("  {} {}", "API Key:".dimmed(), "••••••••••••(saved)".green());
     }
     println!();
-    println!("  {} {}", "🚀 Ready!".green().bold(), "Try these commands:");
+    println!("  {} Try these commands:", "🚀 Ready!".green().bold());
     println!("     {} — Interactive chat", "zenclaw chat".cyan());
     println!(
         "     {} — Quick question",

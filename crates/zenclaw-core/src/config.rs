@@ -7,7 +7,7 @@ use crate::error::{Result, ZenClawError};
 use crate::provider::ProviderConfig;
 
 /// Top-level ZenClaw configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ZenClawConfig {
     /// LLM provider settings.
     #[serde(default)]
@@ -103,12 +103,3 @@ impl ZenClawConfig {
     }
 }
 
-impl Default for ZenClawConfig {
-    fn default() -> Self {
-        Self {
-            provider: ProviderConfig::default(),
-            agent: AgentSettings::default(),
-            channels: ChannelSettings::default(),
-        }
-    }
-}
