@@ -529,6 +529,6 @@ MIT — Use it however you want. Build amazing things.
 ---
 
 <p align="center">
-  <sub>Built with ❤️ and 🦀 by <a href="https://github.com/volumeee">baguse</a></sub><br/>
+  <sub>Built with ❤️ and 🦀 by <a href="https://github.com/volumeee">volumeee</a></sub><br/>
   <sub><b>7,758</b> lines of Rust · <b>43</b> source files · <b>5.1MB</b> binary · <b>~12MB</b> RAM</sub>
 </p>
