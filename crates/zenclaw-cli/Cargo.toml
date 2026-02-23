@@ -1,0 +1,27 @@
+[package]
+name = "zenclaw-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ZenClaw CLI — terminal interface for the AI agent"
+
+[[bin]]
+name = "zenclaw"
+path = "src/main.rs"
+
+[dependencies]
+zenclaw-core = { path = "../zenclaw-core" }
+zenclaw-hub = { path = "../zenclaw-hub" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+colored = { workspace = true }
+indicatif = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+toml = { workspace = true }
+dialoguer = { workspace = true }
+console = { workspace = true }

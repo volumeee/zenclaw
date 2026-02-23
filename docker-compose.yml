@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  zenclaw:
+    build: .
+    container_name: zenclaw
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - RUST_LOG=info
+      # Uncomment and set your provider:
+      # - OPENAI_API_KEY=sk-...
+      # - GEMINI_API_KEY=AI...
+    volumes:
+      - zenclaw-data:/home/zenclaw/.local/share/zenclaw
+      - zenclaw-config:/home/zenclaw/.config/zenclaw
+
+volumes:
+  zenclaw-data:
+  zenclaw-config:
