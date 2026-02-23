@@ -537,67 +537,94 @@ async fn main() -> anyhow::Result<()> {
             run_update_check().await?;
         }
 
-        // ─── Default: show interactive menu ─────────────
+        // ─── Default: show interactive menu loop ─────────────
         None => {
-            print_banner();
+            loop {
+                // Clear the screen for a cleaner UI loop experience
+                print!("\x1B[2J\x1B[1;1H");
+                io::stdout().flush().ok();
 
-            let has_config = ZenClawConfig::default_path().exists();
-            let mut options = vec![
-                "💬 Chat (Interactive)",
-                "🤖 Start Telegram Bot",
-                "🎮 Start Discord Bot",
-                "📱 Start WhatsApp Bot",
-                "🌐 Start REST API Server",
-                "📚 Manage Skills",
-                "⚙️  Settings",
-                "🔄 Check for Updates",
-                "❌ Exit",
-            ];
+                print_banner();
 
-            if !has_config {
-                options.insert(0, "⚡ Setup Wizard (Start Here)");
-            }
+                let has_config = ZenClawConfig::default_path().exists();
+                let mut options = vec![
+                    "1. 💬 Chat (Interactive)",
+                    "2. 🤖 Start Telegram Bot",
+                    "3. 🎮 Start Discord Bot",
+                    "4. 📱 Start WhatsApp Bot",
+                    "5. 🌐 Start REST API Server",
+                    "6. 📚 Manage Skills",
+                    "7. ⚙️  Settings",
+                    "8. 🔄 Check for Updates",
+                    "9. ❌ Exit",
+                ];
 
-            let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-                .with_prompt("What would you like to do?")
-                .default(0)
-                .items(&options)
-                .interact()?;
-
-            let choice = options[selection];
-            
-            if choice == "⚡ Setup Wizard (Start Here)" {
-                setup::run_setup()?;
-            } else if choice == "💬 Chat (Interactive)" {
-                run_chat(None, None, None, None, vec![]).await?;
-            } else if choice == "🤖 Start Telegram Bot" {
-                run_telegram(None, None, None, None, None).await?;
-            } else if choice == "🎮 Start Discord Bot" {
-                run_discord(None, None, None, None).await?;
-            } else if choice == "📱 Start WhatsApp Bot" {
-                run_whatsapp("http://localhost:3001", None, None, None, None).await?;
-            } else if choice == "🌐 Start REST API Server" {
-                run_serve("127.0.0.1", 3000, None, None, None).await?;
-            } else if choice == "📚 Manage Skills" {
-                run_skills(None).await?;
-            } else if choice == "⚙️  Settings" {
-                let config_options = vec!["Show Configuration", "Show Config Path", "Run Setup Wizard", "Back"];
-                let config_sel = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-                    .with_prompt("⚙️ Settings:")
-                    .default(0)
-                    .items(&config_options)
-                    .interact()?;
-                    
-                match config_sel {
-                    0 => setup::run_config_show()?,
-                    1 => println!("{}", ZenClawConfig::default_path().display()),
-                    2 => setup::run_setup()?,
-                    _ => {}
+                if !has_config {
+                    options.insert(0, "0. ⚡ Setup Wizard (Start Here)");
                 }
-            } else if choice == "🔄 Check for Updates" {
-                run_update_check().await?;
-            } else if choice == "❌ Exit" {
-                println!("Goodbye! 🦀");
+
+                let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                    .with_prompt("What would you like to do? (Use arrow keys or type number)")
+                    .default(0)
+                    .items(&options)
+                    .interact()?;
+
+                let choice = options[selection];
+                let mut should_exit = false;
+                
+                let result = if choice.contains("Setup Wizard") {
+                    setup::run_setup()
+                } else if choice.contains("💬 Chat") {
+                    run_chat(None, None, None, None, vec![]).await
+                } else if choice.contains("Telegram") {
+                    run_telegram(None, None, None, None, None).await
+                } else if choice.contains("Discord") {
+                    run_discord(None, None, None, None).await
+                } else if choice.contains("WhatsApp") {
+                    run_whatsapp("http://localhost:3001", None, None, None, None).await
+                } else if choice.contains("REST API") {
+                    run_serve("127.0.0.1", 3000, None, None, None).await
+                } else if choice.contains("Manage Skills") {
+                    run_skills(None).await
+                } else if choice.contains("Settings") {
+                    let config_options = vec!["1. Show Configuration", "2. Show Config Path", "3. Run Setup Wizard", "4. Back"];
+                    let config_sel = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                        .with_prompt("⚙️ Settings:")
+                        .default(0)
+                        .items(&config_options)
+                        .interact()?;
+                        
+                    match config_sel {
+                        0 => setup::run_config_show(),
+                        1 => {
+                            println!("{}", ZenClawConfig::default_path().display());
+                            Ok(())
+                        },
+                        2 => setup::run_setup(),
+                        _ => Ok(()),
+                    }
+                } else if choice.contains("Check for Updates") {
+                    run_update_check().await
+                } else if choice.contains("Exit") {
+                    println!("Goodbye! 🦀");
+                    should_exit = true;
+                    Ok(())
+                } else {
+                    Ok(())
+                };
+
+                // Handle errors gracefully without crashing the loop
+                if let Err(e) = result {
+                    println!("\n{}", format!("❌ Error: {}", e).red().bold());
+                }
+
+                if should_exit {
+                    break;
+                } else {
+                    println!("\n{}", "Press Enter to return to main menu...".dimmed());
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).ok();
+                }
             }
         }
     }
@@ -873,17 +900,26 @@ async fn run_telegram(
                 .map(|t| t.bot_token.clone())
                 .filter(|t| !t.is_empty())
         })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No Telegram bot token!\n\n\
-                 Set it via:\n\
-                 • {} \n\
-                 • {} \n\
-                 • Set TELEGRAM_BOT_TOKEN env var",
-                "zenclaw config set telegram_token <TOKEN>".cyan(),
-                "zenclaw telegram --token <TOKEN>".cyan()
-            )
-        })?;
+        .or_else(|| {
+            // Interactively prompt for the token if missing!
+            println!("\n  {}", "🤖 No Telegram Bot Token found!".yellow());
+            println!("  Get one from @BotFather on Telegram.");
+            let token: String = dialoguer::Password::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                .with_prompt("Enter your Telegram Bot Token")
+                .interact()
+                .unwrap_or_default();
+            
+            if !token.is_empty() {
+                // Save it to config automatically
+                if let Err(e) = setup::run_config_set("telegram_token", &token) {
+                    println!("Failed to save token to config: {}", e);
+                }
+                Some(token)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("No Telegram bot token provided. Aborting."))?;
 
     let provider = Arc::new(create_provider(&provider_name, &api_key, &model, None));
 
@@ -954,14 +990,26 @@ async fn run_discord(
                 .map(|d| d.bot_token.clone())
                 .filter(|t| !t.is_empty())
         })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "No Discord bot token!\n\n\
-                 Get one from https://discord.com/developers/applications\n\
-                 Then: {}",
-                "zenclaw discord --token <TOKEN>".cyan()
-            )
-        })?;
+        .or_else(|| {
+            // Interactively prompt for the token if missing!
+            println!("\n  {}", "🎮 No Discord Bot Token found!".yellow());
+            println!("  Get one from https://discord.com/developers/applications");
+            let token: String = dialoguer::Password::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                .with_prompt("Enter your Discord Bot Token")
+                .interact()
+                .unwrap_or_default();
+            
+            if !token.is_empty() {
+                // Save it to config automatically
+                if let Err(e) = setup::run_config_set("discord_token", &token) {
+                    println!("Failed to save token to config: {}", e);
+                }
+                Some(token)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("No Discord bot token provided. Aborting."))?;
 
     let provider = Arc::new(create_provider(&provider_name, &api_key, &model, None));
 
