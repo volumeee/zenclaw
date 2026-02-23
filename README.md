@@ -484,19 +484,30 @@ scp target/aarch64-unknown-linux-gnu/release/zenclaw pi@raspberrypi:~/
 
 ## 🗺️ Roadmap
 
+**✅ Completed**
+
 - [x] ReAct agent engine with tool calling
 - [x] Multi-provider LLM (OpenAI, Gemini, Ollama, OpenRouter, LM Studio)
 - [x] 15 built-in tools + plugin system
 - [x] 5 channel adapters (CLI, REST API, Telegram, Discord, WhatsApp)
+- [x] Full Interactive CLI UI Loop (`v0.1.6`)
 - [x] RAG / full-text search (SQLite FTS5)
-- [x] Multi-agent router
 - [x] Persistent memory (SQLite)
-- [x] Markdown skills system
-- [x] REST API with rate limiting, auth, metrics
-- [x] Docker support (Dockerfile + compose)
-- [x] GitHub CI/CD (4-platform builds)
-- [x] Auto-update checker
-- [ ] Web dashboard (React/Svelte)
+
+**🔥 High Priority (Next)**
+
+- [ ] **Web Browser Extraction** (Extract clean Markdown from any website)
+- [ ] **Task Scheduler / Background Worker** (True autonomous cron jobs)
+- [ ] **Multimodal Input** (Image and audio parsing support via CLI/Bot)
+
+**🚀 Medium Priority**
+
+- [ ] **Vector Knowledge Base** (Integration with ChromaDB/Qdrant for local documents)
+- [ ] **Local Web Dashboard** (GUI for managing settings, prompts, and plugins easily)
+- [ ] **Multi-Agent Swarm** (Agent orchestration & collaboration)
+
+**✨ Backlog**
+
 - [ ] Streaming responses (SSE)
 - [ ] ESP32 thin client (no_std)
 

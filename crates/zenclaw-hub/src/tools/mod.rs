@@ -1,6 +1,7 @@
 pub mod shell;
 pub mod filesystem;
 pub mod web_fetch;
+pub mod web_scrape;
 pub mod web_search;
 pub mod system_info;
 pub mod cron;
@@ -13,6 +14,7 @@ pub mod env;
 pub use shell::ShellTool;
 pub use filesystem::{ReadFileTool, WriteFileTool, EditFileTool, ListDirTool};
 pub use web_fetch::WebFetchTool;
+pub use web_scrape::WebScrapeTool;
 pub use web_search::WebSearchTool;
 pub use system_info::SystemInfoTool;
 pub use cron::CronTool;
