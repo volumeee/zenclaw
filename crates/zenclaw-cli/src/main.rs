@@ -1192,8 +1192,8 @@ async fn run_update_check() -> anyhow::Result<()> {
             }
 
             println!(
-                "\n  To update: {}",
-                "cargo install --git https://github.com/volumeee/zenclaw.git".cyan()
+                "\n  To update run this command in your terminal:\n  {}",
+                "wget -qO- https://github.com/volumeee/zenclaw/releases/download/v0.1.4/zenclaw-linux-$(uname -m).tar.gz | tar -xz && sudo mv zenclaw-linux-$(uname -m) /usr/local/bin/zenclaw".cyan()
             );
         }
         Ok(None) => {
