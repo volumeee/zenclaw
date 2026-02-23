@@ -26,16 +26,16 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 
 ### Comparison with Popular Agent Frameworks
 
-|                      | [**ZenClaw**](https://github.com/volumeee/zenclaw) | [**OpenClaw**](https://github.com/openclaw/openclaw) | [**NanoClaw**](https://github.com/gavrielc/nanoclaw) |
-| -------------------- | -------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
-| **Language**         | Rust 🦀                                            | TypeScript / Node.js                                 | TypeScript                                           |
-| **Footprint / Size** | **5.1 MB Binary**                                  | > 200MB (Node Modules)                               | Containerized (>100MB)                               |
-| **Idle RAM Usage**   | **~12 MB**                                         | ~800MB – 1.5GB                                       | ~200MB – 500MB                                       |
-| **Boot time**        | **< 100ms**                                        | 2–5s                                                 | 1–3s                                                 |
-| **Dependencies**     | **0 (Zero)**                                       | Node.js 18+, OS libs                                 | Node.js, Container Runtime                           |
-| **Architecture**     | Native Binary (Static)                             | Client-Server / Gateway                              | Agent Containers                                     |
-| **RAG System**       | **✅ SQLite built-in**                             | ChromaDB / External                                  | Vector Search / Files                                |
-| **Edge/ARM ready**   | **✅ Yes (Pi Zero/STB)**                           | ❌ Too Heavy                                         | ⚠️ Requires Docker                                   |
+|                      | [**ZenClaw**](https://github.com/volumeee/zenclaw) | [**OpenClaw**](https://github.com/openclaw/openclaw) | [**NanoClaw**](https://github.com/gavrielc/nanoclaw) | [**PicoClaw**](https://github.com/sipeed/picoclaw) |
+| -------------------- | -------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------- |
+| **Language**         | Rust 🦀                                            | TypeScript / Node.js                                 | TypeScript                                           | Go                                                 |
+| **Footprint / Size** | **5.1 MB Binary**                                  | > 200MB (Node Modules)                               | Containerized (>100MB)                               | ~10MB Binary                                       |
+| **Idle RAM Usage**   | **~12 MB**                                         | ~800MB – 1.5GB                                       | ~200MB – 500MB                                       | ~15 MB                                             |
+| **Boot time**        | **< 100ms**                                        | 2–5s                                                 | 1–3s                                                 | < 1s                                               |
+| **Dependencies**     | **0 (Zero)**                                       | Node.js 18+, OS libs                                 | Node.js, Container Runtime                           | 0 (Zero)                                           |
+| **Architecture**     | Native Binary (Static)                             | Client-Server / Gateway                              | Agent Containers                                     | Native Binary (Static)                             |
+| **RAG System**       | **✅ SQLite built-in**                             | ChromaDB / External                                  | Vector Search / Files                                | MarkDown Files                                     |
+| **Edge/ARM ready**   | **✅ Yes (Pi Zero/STB)**                           | ❌ Too Heavy                                         | ⚠️ Requires Docker                                   | ✅ Yes (RISC-V/ARM)                                |
 
 > **ZenClaw** gives you a production-ready AI agent in a **single 5.1MB binary** — with built-in tools, channels, RAG, and a REST API. Deploy it on a $10 Set-Top Box or a $5 Raspberry Pi Zero.
 
