@@ -213,19 +213,10 @@ pub fn run_setup() -> anyhow::Result<()> {
     println!("  {} {}", "Provider:".dimmed(), provider.display.green());
     println!("  {} {}", "Model:".dimmed(), model.cyan());
     if api_key.is_some() {
-        println!("  {} {}", "API Key:".dimmed(), "••••••••••••(saved)".green());
+    println!("  {} {}", "API Key:".dimmed(), "••••••••••••(saved)".green());
     }
     println!();
-    println!("  {} Try these commands:", "🚀 Ready!".green().bold());
-    println!("     {} — Interactive chat", "zenclaw chat".cyan());
-    println!(
-        "     {} — Quick question",
-        "zenclaw ask \"Hello!\"".cyan()
-    );
-    println!(
-        "     {} — Start Telegram bot",
-        "zenclaw telegram".cyan()
-    );
+    println!("  {} Returning to Main Menu...", "🚀 Ready!".green().bold());
     println!();
 
     Ok(())
