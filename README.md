@@ -26,16 +26,16 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 
 ### Comparison with Popular Agent Frameworks
 
-|                      | [**ZenClaw**](https://github.com/volumeee/zenclaw) | [**OpenClaw**](https://github.com/openclaw/openclaw) | [**Kabot AI**](https://kabot.ai) |
-| -------------------- | -------------------------------------------------- | ---------------------------------------------------- | -------------------------------- |
-| **Language**         | Rust 🦀                                            | TypeScript / Node.js                                 | Python 3.11+                     |
-| **Footprint / Size** | **5.1 MB Binary**                                  | > 200MB (Node Modules)                               | > 200MB (pip installs)           |
-| **Idle RAM Usage**   | **~12 MB**                                         | ~800MB – 1.5GB                                       | ~500MB – 1GB                     |
-| **Boot time**        | **< 100ms**                                        | 2–5s                                                 | 3–10s                            |
-| **Dependencies**     | **0 (Zero)**                                       | Node.js 18+, OS libs                                 | Python 3.11+, Virtualenv         |
-| **Architecture**     | Native Binary (Static)                             | Client-Server / Gateway                              | Gateway-Agent Loop               |
-| **RAG System**       | **✅ SQLite built-in**                             | ChromaDB / External                                  | SQLite + ChromaDB + BM25         |
-| **Edge/ARM ready**   | **✅ Yes (Pi Zero/STB)**                           | ❌ Too Heavy                                         | ❌ Too Heavy                     |
+|                      | [**ZenClaw**](https://github.com/volumeee/zenclaw) | [**OpenClaw**](https://github.com/openclaw/openclaw) | [**NanoClaw**](https://github.com/gavrielc/nanoclaw) |
+| -------------------- | -------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
+| **Language**         | Rust 🦀                                            | TypeScript / Node.js                                 | TypeScript                                           |
+| **Footprint / Size** | **5.1 MB Binary**                                  | > 200MB (Node Modules)                               | Containerized (>100MB)                               |
+| **Idle RAM Usage**   | **~12 MB**                                         | ~800MB – 1.5GB                                       | ~200MB – 500MB                                       |
+| **Boot time**        | **< 100ms**                                        | 2–5s                                                 | 1–3s                                                 |
+| **Dependencies**     | **0 (Zero)**                                       | Node.js 18+, OS libs                                 | Node.js, Container Runtime                           |
+| **Architecture**     | Native Binary (Static)                             | Client-Server / Gateway                              | Agent Containers                                     |
+| **RAG System**       | **✅ SQLite built-in**                             | ChromaDB / External                                  | Vector Search / Files                                |
+| **Edge/ARM ready**   | **✅ Yes (Pi Zero/STB)**                           | ❌ Too Heavy                                         | ⚠️ Requires Docker                                   |
 
 > **ZenClaw** gives you a production-ready AI agent in a **single 5.1MB binary** — with built-in tools, channels, RAG, and a REST API. Deploy it on a $10 Set-Top Box or a $5 Raspberry Pi Zero.
 
