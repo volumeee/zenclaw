@@ -22,30 +22,20 @@
 
 ## Why ZenClaw?
 
-Most AI agent frameworks require Python, Node.js, or heavy runtimes. They eat 1GB+ RAM just to say "hello." ZenClaw is built for the edge — where resources are scarce and reliability matters.
+ZenClaw is part of a larger, modular AI ecosystem. While other frameworks try to do everything in one heavy package, we split responsibilities into laser-focused, high-performance tools:
 
-### Comparison with Popular AI Agent Frameworks
+### The Volumeee AI Ecosystem
 
-|                      |         **ZenClaw**          | **Rig.rs** | **LangChain** |     **AutoGPT**      |  **CrewAI**  |
-| -------------------- | :--------------------------: | :--------: | :-----------: | :------------------: | :----------: |
-| **Language**         |           Rust 🦀            |    Rust    |    Python     |        Python        |    Python    |
-| **Binary / Install** |          **5.1 MB**          |   ~10MB    |    500MB+     |         1GB+         |    300MB+    |
-| **Idle RAM**         |          **~12 MB**          |   ~30MB    |    ~500MB     |        ~1GB+         |    ~400MB    |
-| **Boot time**        |          **<100ms**          |   ~200ms   |     3–10s     |        5–15s         |     3–8s     |
-| **Runtime deps**     |            **0**             |     0      | Python 3.10+  | Python 3.10+, Docker | Python 3.10+ |
-| **Built-in tools**   |            **15**            |  0 (DIY)   |  via plugins  |         10+          | via plugins  |
-| **RAG built-in**     |        **✅ SQLite**         |     ❌     | via vector DB |      via Chroma      |      ❌      |
-| **Chat channels**    | **5** (CLI, API, TG, DC, WA) |  API only  |   API only    |       API only       |   API only   |
-| **Edge/ARM ready**   |            **✅**            |     ✅     |      ❌       |          ❌          |      ❌      |
-| **Single binary**    |            **✅**            |     ✅     |      ❌       |          ❌          |      ❌      |
+|                 | [**ZenClaw**](https://github.com/volumeee/zenclaw) | [**OpenClaw**](https://github.com/volumeee/openclaw) | [**Kanbot Search**](https://github.com/volumeee/kanbot-search) | [**Claw Studio**](https://github.com/volumeee/claw-studio) |
+| --------------- | :------------------------------------------------: | :--------------------------------------------------: | :------------------------------------------------------------: | :--------------------------------------------------------: |
+| **Role**        |              Edge AI Agent Framework               |                AI API Gateway & Auth                 |                    Intelligent Search Agent                    |                   Visual Workflow Editor                   |
+| **Tech Stack**  |                      Rust 🦀                       |                  TypeScript (Hono)                   |                        Python (FastAPI)                        |                           Vue.js                           |
+| **Primary Use** |           Executing tasks, tools, memory           |            Model routing, load balancing             |                     Deep Web Search & RAG                      |                 Designing agents visually                  |
+| **Deployment**  |            Native Binary (Linux/Mac/Pi)            |             Cloudflare Workers / Docker              |                       Docker / Cloud Run                       |                     Static Web Hosting                     |
+| **Footprint**   |            **5.1MB binary, ~12MB RAM**             |                   Edge/Serverless                    |                       Container (~500MB)                       |                       Browser-based                        |
+| **Superpower**  |            Extremely fast & lightweight            |             Unified API for 100+ models              |                  High-quality search results                   |                     No-code AI builder                     |
 
-### ZenClaw Ecosystem
-
-| Project                                                   | Description                                       |
-| --------------------------------------------------------- | ------------------------------------------------- |
-| **ZenClaw** (this)                                        | Edge AI agent — single binary, runs on STB/Pi     |
-| **[OpenClaw](https://github.com/volumeee/openclaw)**      | API Gateway — unified provider routing, OIDC auth |
-| **[ClawStudio](https://github.com/volumeee/claw-studio)** | Visual editor — design agent workflows in a GUI   |
+> **ZenClaw** focuses specifically on the **Agent Engine and Tool Execution**. It consumes models (often via **OpenClaw**), can perform dynamic searches (optionally delegating to **Kanbot Search**), and its behavior can be designed in **Claw Studio**.
 
 > **ZenClaw** gives you a production-ready AI agent in a **single 5.1MB binary** — with built-in tools, channels, RAG, and a REST API. Deploy it on a $10 Set-Top Box or a $5 Raspberry Pi Zero.
 
