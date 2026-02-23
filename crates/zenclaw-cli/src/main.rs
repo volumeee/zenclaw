@@ -537,30 +537,68 @@ async fn main() -> anyhow::Result<()> {
             run_update_check().await?;
         }
 
-        // ─── Default: show welcome ────────────────────
+        // ─── Default: show interactive menu ─────────────
         None => {
             print_banner();
 
             let has_config = ZenClawConfig::default_path().exists();
-            if has_config {
-                println!("  {} Run {} to start chatting\n", "💡".yellow(), "zenclaw chat".cyan());
-            } else {
-                println!("  {} Run {} to get started!\n", "🚀".green(), "zenclaw setup".cyan().bold());
+            let mut options = vec![
+                "💬 Chat (Interactive)",
+                "🤖 Start Telegram Bot",
+                "🎮 Start Discord Bot",
+                "📱 Start WhatsApp Bot",
+                "🌐 Start REST API Server",
+                "📚 Manage Skills",
+                "⚙️  Settings",
+                "🔄 Check for Updates",
+                "❌ Exit",
+            ];
+
+            if !has_config {
+                options.insert(0, "⚡ Setup Wizard (Start Here)");
             }
 
-            println!("  {}", "Commands:".bold());
-            println!("    {} — Interactive setup wizard", "zenclaw setup".cyan());
-            println!("    {} — Chat with AI", "zenclaw chat".cyan());
-            println!("    {} — Quick question", "zenclaw ask \"...\"".cyan());
-            println!("    {} — Manage settings", "zenclaw config show".cyan());
-            println!("    {} — System status", "zenclaw status".cyan());
-            println!("    {} — Telegram bot", "zenclaw telegram".cyan());
-            println!("    {} — Discord bot", "zenclaw discord".cyan());
-            println!("    {} — View skills", "zenclaw skills list".cyan());
-            println!("    {} — REST API server", "zenclaw serve".cyan());
-            println!("    {} — WhatsApp bot", "zenclaw whatsapp".cyan());
-            println!("    {} — Check for updates", "zenclaw update".cyan());
-            println!();
+            let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                .with_prompt("What would you like to do?")
+                .default(0)
+                .items(&options)
+                .interact()?;
+
+            let choice = options[selection];
+            
+            if choice == "⚡ Setup Wizard (Start Here)" {
+                setup::run_setup()?;
+            } else if choice == "💬 Chat (Interactive)" {
+                run_chat(None, None, None, None, vec![]).await?;
+            } else if choice == "🤖 Start Telegram Bot" {
+                run_telegram(None, None, None, None, None).await?;
+            } else if choice == "🎮 Start Discord Bot" {
+                run_discord(None, None, None, None).await?;
+            } else if choice == "📱 Start WhatsApp Bot" {
+                run_whatsapp("http://localhost:3001", None, None, None, None).await?;
+            } else if choice == "🌐 Start REST API Server" {
+                run_serve("127.0.0.1", 3000, None, None, None).await?;
+            } else if choice == "📚 Manage Skills" {
+                run_skills(None).await?;
+            } else if choice == "⚙️  Settings" {
+                let config_options = vec!["Show Configuration", "Show Config Path", "Run Setup Wizard", "Back"];
+                let config_sel = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                    .with_prompt("⚙️ Settings:")
+                    .default(0)
+                    .items(&config_options)
+                    .interact()?;
+                    
+                match config_sel {
+                    0 => setup::run_config_show()?,
+                    1 => println!("{}", ZenClawConfig::default_path().display()),
+                    2 => setup::run_setup()?,
+                    _ => {}
+                }
+            } else if choice == "🔄 Check for Updates" {
+                run_update_check().await?;
+            } else if choice == "❌ Exit" {
+                println!("Goodbye! 🦀");
+            }
         }
     }
 
