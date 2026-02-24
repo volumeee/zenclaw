@@ -168,9 +168,16 @@ impl Agent {
                     Err(e) => {
                         if retry_count >= max_retries {
                             tracing::error!("LLM Provider failed after {} retries: {}", max_retries, e);
-                            return Err(e); // Can't recover
+                            return Err(e);
                         }
                         tracing::warn!("LLM Error: {}. Retrying in {}ms...", e, backoff_ms);
+                        if let Some(b) = bus {
+                            b.publish_system(SystemEvent {
+                                run_id: session_key.to_string(),
+                                event_type: "llm_retry".into(),
+                                data: serde_json::json!({ "attempt": retry_count + 1, "error": e.to_string() }),
+                            });
+                        }
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         retry_count += 1;
                         backoff_ms *= 2;
@@ -255,7 +262,10 @@ impl Agent {
                         b.publish_system(SystemEvent {
                             run_id: session_key.to_string(),
                             event_type: "tool_result".into(),
-                            data: serde_json::json!({ "tool": call.function.name, "result_len": result.len() }),
+                            data: serde_json::json!({
+                                "tool": call.function.name,
+                                "result_len": result.len()
+                            }),
                         });
                     }
                 }

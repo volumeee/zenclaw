@@ -829,8 +829,15 @@ async fn run_chat(
             _ => {}
         }
 
+        // Live transparent status — every agent step prints a new line
+        // so the user sees exactly what ZenClaw is doing in real-time.
         let spinner = indicatif::ProgressBar::new_spinner();
-        spinner.set_message("Thinking...");
+        spinner.set_style(
+            indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_strings(&["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]),
+        );
+        spinner.set_message("🧠 Analyzing your question...");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
         let bus = EventBus::new(32);
@@ -840,6 +847,8 @@ async fn run_chat(
         let _bg_task = tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
                 if let Some(msg) = event.format_status() {
+                    // Print the previous status as a completed step, then show new one
+                    sp_clone.println(format!("  {}", msg.dimmed()));
                     sp_clone.set_message(msg);
                 }
             }
@@ -855,6 +864,7 @@ async fn run_chat(
                 eprintln!("{} {}\n", "Error:".red().bold(), e);
             }
         }
+
     }
 
     Ok(())

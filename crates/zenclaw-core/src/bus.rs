@@ -25,57 +25,112 @@ pub struct SystemEvent {
 }
 
 impl SystemEvent {
-    /// Helper to format a system event into a human-readable string for UI/UX
+    /// Format a system event into a human-readable status string for the CLI.
     pub fn format_status(&self) -> Option<String> {
         match self.event_type.as_str() {
             "agent_think" => {
                 let it = self.data["iteration"].as_u64().unwrap_or(0);
-                Some(format!("🧠 Thinking... (iteration {})", it))
-            }
-            "tool_use" => {
-                if let Some(tool) = self.data["tool"].as_str() {
-                    let mut target = String::new();
-                    let json_args_opt = self.data["args"].as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-                    if let Some(json_args) = json_args_opt {
-                        if let Some(url) = json_args["url"].as_str() {
-                            target = format!(" ({})", url);
-                        } else if let Some(path) = json_args["path"].as_str() {
-                            target = format!(" ({})", path);
-                        } else if let Some(query) = json_args["query"].as_str() {
-                            target = format!(" ({})", query);
-                        } else if let Some(cmd) = json_args["command"].as_str() {
-                            target = format!(" ({})", cmd);
-                        }
-                    }
-                    
-                    let human_tool = match tool {
-                        "web_scrape" | "web_fetch" => "Reading Page",
-                        "web_search" => "Searching Web",
-                        "shell" => "Running Command",
-                        "read_file" | "list_dir" => "Checking File",
-                        "write_file" | "edit_file" => "Modifying Code",
-                        _ => tool,
-                    };
-                    
-                    Some(format!("🛠️ {}{}", human_tool, target))
+                if it == 1 {
+                    Some("🧠 Analyzing your question...".to_string())
                 } else {
-                    None
+                    Some(format!("🔄 Processing results, reasoning step {}...", it))
                 }
             }
+
+            "tool_use" => {
+                let tool = self.data["tool"].as_str().unwrap_or("tool");
+
+                // Extract the most relevant argument from args JSON
+                let args: serde_json::Value = self.data["args"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::Value::Null);
+
+                let context = extract_tool_context(&args);
+
+                let emoji_action = match tool {
+                    "web_search"            => format!("🔍 Searching the web{}", context),
+                    "web_fetch"             => format!("🌐 Fetching page{}", context),
+                    "web_scrape"            => format!("📄 Reading page content{}", context),
+                    "read_file"             => format!("📂 Reading file{}", context),
+                    "write_file"            => format!("✏️  Writing file{}", context),
+                    "edit_file"             => format!("🔧 Editing file{}", context),
+                    "list_dir"              => format!("📁 Listing directory{}", context),
+                    "shell" | "exec"        => format!("⚡ Running command{}", context),
+                    "process"               => format!("🔄 Managing process{}", context),
+                    "sub_agent"             => format!("🤖 Spawning sub-agent{}", context),
+                    "system_info"           => "💻 Checking system info...".to_string(),
+                    "history"               => "🕒 Reading conversation history...".to_string(),
+                    "env"                   => "🌍 Checking environment...".to_string(),
+                    "health"                => "❤️  Running health check...".to_string(),
+                    "cron"                  => format!("⏱️  Scheduling task{}", context),
+                    _                       => format!("🛠️  Running '{}'{}", tool, context),
+                };
+
+                Some(emoji_action)
+            }
+
             "tool_result" => {
-                Some("✅ Analysis Complete. Thinking...".to_string())
+                let tool = self.data["tool"].as_str().unwrap_or("");
+                let len  = self.data["result_len"].as_u64().unwrap_or(0);
+
+                let msg = match tool {
+                    "web_search"  => format!("✅ Got search results ({} bytes) — thinking...", len),
+                    "web_fetch"   => format!("✅ Page fetched ({} bytes) — analyzing...", len),
+                    "web_scrape"  => format!("✅ Content extracted ({} bytes) — analyzing...", len),
+                    "read_file"   => format!("✅ File read ({} bytes) — processing...", len),
+                    "shell" | "exec" => format!("✅ Command finished ({} bytes output) — evaluating...", len),
+                    _             => "✅ Done — reasoning about results...".to_string(),
+                };
+                Some(msg)
             }
+
             "memory_truncate" => {
-                Some("🧹 Summarizing old memories...".to_string())
+                Some("🧹 Trimming old conversation to save memory...".to_string())
             }
+
             "tool_timeout" => {
-                let tool = self.data["tool"].as_str().unwrap_or("unknown");
-                Some(format!("⚠️ Tool timeout: {}", tool))
+                let tool = self.data["tool"].as_str().unwrap_or("tool");
+                Some(format!("⚠️  '{}' timed out — trying a different approach...", tool))
             }
+
+            "llm_retry" => {
+                let attempt = self.data["attempt"].as_u64().unwrap_or(1);
+                Some(format!("🔁 Connection hiccup, retrying... (attempt {})", attempt))
+            }
+
             _ => None,
         }
     }
 }
+
+/// Extract the most relevant context string from tool arguments.
+fn extract_tool_context(args: &serde_json::Value) -> String {
+    // Priority: query > url > path > command > (nothing)
+    let raw = if let Some(q) = args["query"].as_str() {
+        q
+    } else if let Some(u) = args["url"].as_str() {
+        u
+    } else if let Some(p) = args["path"].as_str() {
+        p
+    } else if let Some(c) = args["command"].as_str() {
+        c
+    } else if let Some(c) = args["cmd"].as_str() {
+        c
+    } else {
+        return String::new();
+    };
+
+    // Truncate long context for display
+    let display = if raw.len() > 60 {
+        format!("{}...", &raw[..60])
+    } else {
+        raw.to_string()
+    };
+    format!(": \"{}\"", display)
+}
+
+
 
 /// The event bus — central nervous system of ZenClaw.
 ///
