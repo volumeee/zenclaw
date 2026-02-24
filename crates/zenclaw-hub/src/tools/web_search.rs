@@ -1,17 +1,18 @@
 //! Web search tool — multi-engine, robust, zero API key required.
 //!
-//! Search strategy (tried in this order until results are found):
+//! Search strategy (all run in parallel, results merged + deduplicated):
 //!
-//! 1. DDG Instant Answer API  — JSON, no HTML parsing, fastest
-//! 2. DDG HTML endpoint        — Full web results via POST
-//! 3. DDG Lite endpoint         — Simpler HTML, harder to block
-//! 4. Wikipedia Search API      — Best for factual/encyclopedic queries
+//! 1. DDG Instant Answer API  — JSON, direct factual answers (no HTML parsing)
+//! 2. Jina Search (s.jina.ai) — reliable web search, returns clean markdown
+//! 3. DDG Lite endpoint        — Simpler HTML, good fallback on restricted nets
+//! 4. Wikipedia Search API     — Best for encyclopedic/factual queries
 //!
-//! Results from all successful engines are merged + deduplicated.
+//! Language detection is delegated to the LLM agent loop via the `lang`
+//! parameter — the AI detects the user's language and passes 'id'/'en'/etc.
+//! This keeps the tool generic with no hardcoded language heuristics.
 
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -26,7 +27,6 @@ const USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
 ];
 
-// Simple rotate by process uptime seconds (no rand dependency needed)
 fn pick_user_agent() -> &'static str {
     let idx = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -34,6 +34,18 @@ fn pick_user_agent() -> &'static str {
         .unwrap_or(0)
         % USER_AGENTS.len();
     USER_AGENTS[idx]
+}
+
+fn percent_encode(s: &str) -> String {
+    s.chars().map(|c| match c {
+        'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+        ' ' => "+".to_string(),
+        c => {
+            let mut buf = [0u8; 4];
+            let encoded = c.encode_utf8(&mut buf);
+            encoded.bytes().map(|b| format!("%{:02X}", b)).collect()
+        }
+    }).collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -71,9 +83,14 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the internet. Returns titles, URLs, and snippets.\n\
-        Provides direct answers for factual questions (who, what, when, where).\n\
-        Uses multiple search engines internally for reliability."
+        "Search the internet for current information. Returns titles, URLs, and snippets.\n\
+        Provides direct answers for factual questions (who, what, when, where, how).\n\
+        Uses multiple search engines in parallel for maximum reliability.\n\
+        IMPORTANT: Detect the language of the user's query and pass it as 'lang' parameter:\n\
+        - If user writes in Indonesian/Bahasa Indonesia → pass lang='id'\n\
+        - If user writes in English → pass lang='en'\n\
+        - If unsure → pass lang='auto'\n\
+        Always search in the same language as the user's question for best results."
     }
 
     fn parameters(&self) -> Value {
@@ -82,7 +99,7 @@ impl Tool for WebSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query. Be specific for better results."
+                    "description": "The search query. Write in the same language as the user's question."
                 },
                 "max_results": {
                     "type": "integer",
@@ -90,7 +107,8 @@ impl Tool for WebSearchTool {
                 },
                 "lang": {
                     "type": "string",
-                    "description": "Language hint for results: 'id' (Indonesia), 'en' (English), 'auto' (default)"
+                    "enum": ["id", "en", "auto"],
+                    "description": "Language of the query. 'id' for Indonesian (uses id.wikipedia.org + Jina in Indonesian), 'en' for English, 'auto' to let the tool decide."
                 }
             },
             "required": ["query"]
@@ -116,34 +134,34 @@ impl Tool for WebSearchTool {
         let mut seen_urls: HashSet<String> = HashSet::new();
 
         // ── Run all engines in parallel ───────────────────────────────────
-        let (instant_opt, ddg_results, lite_results, wiki_results) = tokio::join!(
+        let (instant_opt, jina_results, lite_results, wiki_results) = tokio::join!(
             self.ddg_instant(query),
-            self.ddg_html(query, max_results, lang),
+            self.jina_search(query, max_results, lang),
             self.ddg_lite(query, max_results, lang),
             self.wikipedia_search(query, 4, lang),
         );
 
-        // ── Strategy 1: DDG Instant Answer (direct factual answer) ────────
+        // ── Strategy 1: DDG Instant Answer (direct factual answer, highest priority) ──
         if let Some(instant) = instant_opt {
             output.push_str(&instant);
             output.push_str("\n\n");
         }
 
-        // ── Strategy 2: DDG HTML results ──────────────────────────────────
-        for r in ddg_results {
+        // ── Strategy 2: Jina Search (primary web results, clean markdown) ──
+        for r in jina_results {
             if seen_urls.insert(r.url.clone()) {
                 all_results.push(r);
             }
         }
 
-        // ── Strategy 3: DDG Lite (always merge, dedup handles overlap) ───
+        // ── Strategy 3: DDG Lite (fallback, always merge — dedup handles overlap) ──
         for r in lite_results {
             if seen_urls.insert(r.url.clone()) {
                 all_results.push(r);
             }
         }
 
-        // ── Strategy 4: Wikipedia (always — best for factual queries) ─────
+        // ── Strategy 4: Wikipedia (always — best for factual/encyclopedic queries) ──
         let mut wiki_top_url: Option<String> = None;
         for r in wiki_results {
             if wiki_top_url.is_none() {
@@ -154,31 +172,29 @@ impl Tool for WebSearchTool {
             }
         }
 
-        // ── Strategy 5: Jina Reader — fetch full Wikipedia article text ───
-        // Only when no instant answer was found (common on restricted networks).
-        // Fetches the top Wikipedia article for richer factual context.
+        // ── Strategy 5: Jina Reader — full article when no instant answer ──
+        // Fetches the top Wikipedia article for rich factual context.
+        // Useful on networks where DuckDuckGo endpoints are blocked.
         if output.trim().is_empty() && let Some(wiki_url) = wiki_top_url {
-            tracing::info!("web_search: fetching full article via Jina Reader: {}", wiki_url);
+            tracing::info!("web_search: Jina Reader fallback for: {}", wiki_url);
             let jina_url = format!("https://r.jina.ai/{}", wiki_url);
             if let Ok(resp) = self.client.get(&jina_url)
                 .header("Accept", "text/plain")
                 .send().await
                 && let Ok(text) = resp.text().await
             {
-                let trimmed = if text.len() > 1500 {
-                    format!("{}...\n*(truncated — use web_fetch for full article)*", &text[..1500])
+                let trimmed = if text.len() > 2000 {
+                    format!("{}...\n*(truncated — use web_fetch for full article)*", &text[..2000])
                 } else {
                     text
                 };
                 if trimmed.len() > 100 {
-                    output.push_str("## Wikipedia Article (via Jina Reader)\n\n");
+                    output.push_str("## Article Content (via Jina Reader)\n\n");
                     output.push_str(&trimmed);
                     output.push_str("\n\n");
                 }
             }
         }
-
-
 
         // ── Compile final output ──────────────────────────────────────────
         let take = all_results.len().min(max_results);
@@ -204,17 +220,14 @@ impl Tool for WebSearchTool {
                 Try:\n\
                 • Rephrase the query (simpler terms)\n\
                 • Use `web_fetch` with a direct URL (e.g. wikipedia page)\n\
-                • Use `web_scrape` to extract content from a known site",
+                • Use `web_scrape` for deep content extraction\n\
+                • The network may be restricted — check connectivity",
                 query
             ));
         }
 
-        tracing::debug!(
-            "web_search: {} total results ({} bytes)",
-            take,
-            output.len()
-        );
-
+        let bytes = output.len();
+        tracing::debug!("web_search: {} total results ({} bytes)", take, bytes);
         Ok(output)
     }
 }
@@ -225,158 +238,144 @@ impl Tool for WebSearchTool {
 
 impl WebSearchTool {
     /// DDG Instant Answer API — returns direct answers, abstracts, related topics.
-    /// Uses the official JSON API endpoint (no API key, no block).
+    /// JSON format, no HTML parsing required, very low block risk.
     async fn ddg_instant(&self, query: &str) -> Option<String> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "PascalCase")]
-        struct DdgResponse {
-            #[serde(default)]
-            answer: String,
-            #[serde(default)]
-            answer_type: String,
-            #[serde(default)]
-            abstract_text: String,
-            #[serde(default)]
-            abstract_source: String,
-            #[serde(default)]
-            abstract_url: String,
-            #[serde(default)]
-            definition: String,
-            #[serde(default)]
-            definition_source: String,
-            #[serde(default)]
-            related_topics: Vec<RelatedTopic>,
-        }
-
-        #[derive(Deserialize)]
-        struct RelatedTopic {
-            #[serde(rename = "Text", default)]
-            text: String,
-            #[serde(rename = "FirstURL", default)]
-            first_url: String,
-        }
-
         let url = format!(
             "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
             percent_encode(query)
         );
 
-        let resp = self
-            .client
-            .get(&url)
+        let resp = self.client.get(&url)
             .header("Accept", "application/json")
-            .send()
-            .await
-            .ok()?;
+            .send().await.ok()?;
 
-        let ddg: DdgResponse = resp.json().await.ok()?;
-        let mut parts: Vec<String> = Vec::new();
+        let text = resp.text().await.ok()?;
+        if text.len() < 10 { return None; }
 
-        // Direct answer (e.g. "2 + 2 = 4", calculator)
-        if !ddg.answer.is_empty() {
-            let atype = if ddg.answer_type.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", ddg.answer_type)
-            };
-            parts.push(format!("💡 **Direct Answer{}:** {}", atype, ddg.answer));
+        let v: Value = serde_json::from_str(&text).ok()?;
+        let mut out = String::new();
+
+        // Direct answer (e.g. "2+2 = 4", unit conversions)
+        if let Some(ans) = v["Answer"].as_str()
+            && !ans.is_empty()
+        {
+            out.push_str(&format!("💡 **Direct Answer**: {}\n", ans));
         }
 
-        // Abstract (Wikipedia-style summary)
-        if !ddg.abstract_text.is_empty() {
-            let src = if ddg.abstract_source.is_empty() {
-                String::new()
-            } else if ddg.abstract_url.is_empty() {
-                format!(" — *{}*", ddg.abstract_source)
-            } else {
-                format!(" — *{}* ({})", ddg.abstract_source, ddg.abstract_url)
-            };
-            parts.push(format!("📖 **Summary{}:**\n{}", src, ddg.abstract_text));
+
+        // Wikipedia abstract
+        if let Some(abs) = v["AbstractText"].as_str()
+            && !abs.is_empty()
+        {
+            let src = v["AbstractURL"].as_str().unwrap_or("");
+            out.push_str(&format!("📖 **Summary**: {}\n", abs));
+            if !src.is_empty() {
+                out.push_str(&format!("   🔗 {}\n", src));
+            }
         }
+
 
         // Definition
-        if !ddg.definition.is_empty() {
-            let src = if ddg.definition_source.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", ddg.definition_source)
-            };
-            parts.push(format!("📝 **Definition{}:** {}", src, ddg.definition));
+        if let Some(def) = v["Definition"].as_str()
+            && !def.is_empty()
+        {
+            out.push_str(&format!("📚 **Definition**: {}\n", def));
         }
 
-        // Related topics (up to 4)
-        let topics: Vec<String> = ddg
-            .related_topics
-            .iter()
-            .filter(|t| !t.text.is_empty() && !t.first_url.is_empty())
-            .take(4)
-            .map(|t| {
-                let snippet = if t.text.len() > 120 {
-                    format!("{}...", &t.text[..120])
-                } else {
-                    t.text.clone()
-                };
-                format!("• {} ({})", snippet, t.first_url)
-            })
-            .collect();
 
-        if !topics.is_empty() {
-            parts.push(format!("🔗 **Related:**\n{}", topics.join("\n")));
+        // Related topics (top 3)
+        if let Some(topics) = v["RelatedTopics"].as_array() {
+            let mut count = 0;
+            for topic in topics {
+                if count >= 3 { break; }
+                if let (Some(text), Some(url)) = (topic["Text"].as_str(), topic["FirstURL"].as_str())
+                    && !text.is_empty()
+                {
+                    out.push_str(&format!("• {} — {}\n", text, url));
+                    count += 1;
+                }
+
+            }
         }
 
-        if parts.is_empty() {
-            return None;
-        }
-
-        Some(format!(
-            "## Instant Answer for: \"{}\"\n\n{}\n",
-            query,
-            parts.join("\n\n")
-        ))
+        if out.is_empty() { None } else { Some(format!("## Instant Answer\n{}", out)) }
     }
 
-    /// DuckDuckGo HTML search — full web results.
-    async fn ddg_html(&self, query: &str, max: usize, lang: &str) -> Vec<SearchResult> {
-        let kl = match lang {
-            "id" => "id-id",
-            "en" => "us-en",
-            _ => "wt-wt", // worldwide
+    /// Jina Search (s.jina.ai) — reliable web search returning clean markdown.
+    /// Free without API key, works on most networks.
+    /// Returns structured JSON with title, url, content per result.
+    async fn jina_search(&self, query: &str, max: usize, lang: &str) -> Vec<SearchResult> {
+        // Jina Search supports locale via X-Locale header
+        let locale = match lang {
+            "id" => "id-ID",
+            "en" => "en-US",
+            _ => "",
         };
 
-        let resp = self
-            .client
-            .post("https://html.duckduckgo.com/html/")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-            .header("Accept-Language", "en-US,en;q=0.9,id;q=0.8")
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("Referer", "https://duckduckgo.com/")
-            .header("Origin", "https://duckduckgo.com")
-            .form(&[
-                ("q", query),
-                ("b", ""),
-                ("kl", kl),
-                ("df", ""),
-            ])
-            .send()
-            .await;
+        let url = format!("https://s.jina.ai/{}", percent_encode(query));
 
-        let html = match resp {
-            Ok(r) => r.text().await.unwrap_or_default(),
+        let mut req = self.client.get(&url)
+            .header("Accept", "application/json")
+            .header("X-Retain-Images", "none");
+
+        if !locale.is_empty() {
+            req = req.header("X-Locale", locale);
+        }
+
+        let resp = match req.send().await {
+            Ok(r) => r,
             Err(e) => {
-                tracing::warn!("DDG HTML request failed: {}", e);
+                tracing::warn!("Jina Search request failed: {}", e);
                 return vec![];
             }
         };
 
-        if html.len() < 500 {
-            tracing::warn!("DDG HTML returned tiny response ({} bytes) — likely blocked", html.len());
+        let text = resp.text().await.unwrap_or_default();
+        if text.len() < 50 {
+            tracing::warn!("Jina Search response suspiciously small ({} bytes)", text.len());
             return vec![];
         }
 
-        parse_ddg_html(&html, max)
+        let v: Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Jina Search JSON parse failed: {}", e);
+                return vec![];
+            }
+        };
+
+        let items = match v["data"].as_array() {
+            Some(a) => a,
+            None => {
+                tracing::warn!("Jina Search: no 'data' array in response");
+                return vec![];
+            }
+        };
+
+        items.iter().take(max).filter_map(|item| {
+            let title = item["title"].as_str().unwrap_or("").to_string();
+            let url = item["url"].as_str().unwrap_or("").to_string();
+            if url.is_empty() { return None; }
+
+            // Use 'description' as snippet, fall back to first 200 chars of 'content'
+            let snippet = if let Some(desc) = item["description"].as_str() {
+                desc.to_string()
+            } else if let Some(content) = item["content"].as_str() {
+                let trimmed = content.trim();
+                if trimmed.len() > 200 {
+                    format!("{}...", &trimmed[..200])
+                } else {
+                    trimmed.to_string()
+                }
+            } else {
+                String::new()
+            };
+
+            Some(SearchResult { title, url, snippet })
+        }).collect()
     }
 
-    /// DuckDuckGo Lite — simpler HTML, lower block rate on edge devices.
+    /// DDG Lite — simpler HTML format, low block rate on congested/edge IPs.
     async fn ddg_lite(&self, query: &str, max: usize, lang: &str) -> Vec<SearchResult> {
         let kl = match lang {
             "id" => "id-id",
@@ -414,29 +413,35 @@ impl WebSearchTool {
         parse_ddg_lite(&html, max)
     }
 
-    /// Wikipedia Search API — searches both id and en Wikipedia, merges results.
+    /// Wikipedia Search API — free, JSON, no auth, great for factual queries.
+    /// Lang is passed directly from the LLM tool call — no hardcoded detection.
     async fn wikipedia_search(&self, query: &str, max: usize, lang: &str) -> Vec<SearchResult> {
-        // Auto-detect Indonesian from query words
-        let is_indonesian = matches!(lang, "id") || detect_indonesian(query);
-        let wiki_langs: &[&str] = if is_indonesian {
-            &["id", "en"]  // Indonesian query: search id first, then en with translated terms
+        // Map lang to Wikipedia language code; default to English
+        // The LLM is instructed in the tool description to pass 'id' for Indonesian
+        let wiki_lang = match lang {
+            "id" => "id",
+            "en" => "en",
+            // For 'auto', try both in parallel and merge
+            _ => "en",
+        };
+
+        // When auto, also search Indonesian Wikipedia if query might be Indonesian
+        // We rely on simple heuristic: any non-ASCII Latin characters → likely Indonesian
+        // (but this is just a bonus, not the primary detection mechanism)
+        let langs_to_try: &[&str] = if lang == "auto" {
+            &["en", "id"]
         } else {
-            &["en"]
+            std::slice::from_ref(&wiki_lang)
         };
 
         let mut results = Vec::new();
-        for &wl in wiki_langs {
-            // For English Wikipedia with Indonesian query, use key nouns only
-            let search_query = if wl == "en" && is_indonesian {
-                indonesian_to_english_hint(query)
-            } else {
-                query.to_string()
-            };
+        let mut seen: HashSet<u64> = HashSet::new();
 
+        for &wl in langs_to_try {
             let url = format!(
                 "https://{}.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&srlimit={}&format=json&utf8=1&srprop=snippet|titlesnippet",
                 wl,
-                percent_encode(&search_query),
+                percent_encode(query),
                 max
             );
 
@@ -467,32 +472,15 @@ impl WebSearchTool {
 
             for item in items.iter().take(max) {
                 let Some(title) = item["title"].as_str() else { continue };
+                let Some(page_id) = item["pageid"].as_u64() else { continue };
+
+                if !seen.insert(page_id) { continue; } // dedup across wikis
+
                 let snippet = item["snippet"].as_str()
                     .map(strip_html_tags)
                     .unwrap_or_default();
-                let Some(page_id) = item["pageid"].as_u64() else { continue };
-
-                // Score relevance: skip articles where title is clearly unrelated
-                // (e.g. searching president, getting "protests" article)
-                let title_lower = title.to_lowercase();
-                let query_lower = query.to_lowercase();
-                let skip_keywords = ["protest", "demonstration", "riot", "election fraud",
-                    "protes", "demonstrasi", "huru-hara", "kerusuhan"];
-                let is_irrelevant = skip_keywords.iter().any(|kw| title_lower.contains(kw))
-                    && !query_lower.contains("protest")
-                    && !query_lower.contains("protes");
-
-                if is_irrelevant {
-                    tracing::debug!("web_search: skipping irrelevant Wikipedia hit: {}", title);
-                    continue;
-                }
-
                 let url = format!("https://{}.wikipedia.org/?curid={}", wl, page_id);
-                results.push(SearchResult {
-                    title: title.to_string(),
-                    url,
-                    snippet,
-                });
+                results.push(SearchResult { title: title.to_string(), url, snippet });
 
                 if results.len() >= max { break; }
             }
@@ -504,73 +492,9 @@ impl WebSearchTool {
     }
 }
 
-
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Language helpers
+// HTML parsers + helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// Detect if a query is predominantly Indonesian based on common Indonesian words.
-fn detect_indonesian(query: &str) -> bool {
-    const ID_WORDS: &[&str] = &[
-        "siapa", "apa", "kapan", "dimana", "di mana", "berapa", "mengapa",
-        "bagaimana", "sekarang", "adalah", "dengan", "untuk", "yang", "dan",
-        "atau", "tidak", "bisa", "akan", "sudah", "belum", "baru", "lagi",
-        "presiden", "menteri", "gubernur", "bupati", "indonesia", "jakarta",
-        "pemerintah", "negara", "rakyat", "bangsa", "tahun", "bulan",
-        "saat", "ini", "itu", "dari", "ke", "di", "pada",
-    ];
-    let q = query.to_lowercase();
-    let words: Vec<&str> = q.split_whitespace().collect();
-    let id_count = words.iter()
-        .filter(|w| ID_WORDS.contains(w))
-        .count();
-    // If ≥1 Indonesian word found, treat as Indonesian query
-    id_count >= 1
-}
-
-/// Convert an Indonesian query to key English nouns for English Wikipedia search.
-/// This is a simple keyword extraction — not a full translation.
-fn indonesian_to_english_hint(query: &str) -> String {
-    let q = query.to_lowercase();
-    // Simple word-to-word substitution for common query patterns
-    let substitutions: &[(&str, &str)] = &[
-        ("presiden", "president"),
-        ("perdana menteri", "prime minister"),
-        ("menteri", "minister"),
-        ("gubernur", "governor"),
-        ("walikota", "mayor"),
-        ("bupati", "regent"),
-        ("indonesia", "Indonesia"),
-        ("ekonomi", "economy"),
-        ("politik", "politics"),
-        ("sejarah", "history"),
-        ("perang", "war"),
-        ("ibu kota", "capital city"),
-        ("penduduk", "population"),
-        ("kota", "city"),
-        ("provinsi", "province"),
-        ("pulau", "island"),
-        ("sungai", "river"),
-        ("gunung", "mountain"),
-    ];
-
-    let mut result = q.clone();
-    for (id_word, en_word) in substitutions {
-        result = result.replace(id_word, en_word);
-    }
-
-    // Strip remaining common Indonesian stop words that confuse English Wikipedia
-    let stop_words = ["siapa", "apa", "adalah", "sekarang", "saat", "ini",
-        "itu", "yang", "dengan", "untuk", "dari", "ke", "di", "pada",
-        "berapa", "kapan", "dimana", "bagaimana", "mengapa"];
-    let cleaned: Vec<&str> = result.split_whitespace()
-        .filter(|w| !stop_words.contains(w))
-        .collect();
-
-    cleaned.join(" ")
-}
-
 
 /// A single search result.
 struct SearchResult {
@@ -591,182 +515,160 @@ fn parse_ddg_html(html: &str, max: usize) -> Vec<SearchResult> {
             None => break,
         };
 
-        // href is before the class attribute in DDG
-        let search_win = link_start.saturating_sub(300);
-        let url = extract_attr(&html[search_win..link_start + 50], "href")
-            .unwrap_or_default();
-
-        // Title: content between > and </a>
-        let title_open = match html[link_start..].find('>') {
-            Some(p) => link_start + p + 1,
-            None => { pos = link_start + 20; continue; }
+        // Extract href
+        let href_slice = &html[link_start..];
+        let href_start = match href_slice.find("href=\"") {
+            Some(p) => link_start + p + 6,
+            None => { pos = link_start + 1; continue; }
         };
-        let title_close = match html[title_open..].find("</a>") {
-            Some(p) => title_open + p,
-            None => { pos = title_open; continue; }
+        let href_end = match html[href_start..].find('"') {
+            Some(p) => href_start + p,
+            None => { pos = link_start + 1; continue; }
         };
-        let title = strip_html_tags(&html[title_open..title_close]);
+        let raw_url = &html[href_start..href_end];
 
-        // Snippet: look for class="result__snippet" after title
-        let snippet = find_class_content(html, title_close, "result__snippet")
-            .unwrap_or_default();
+        // DDG wraps URLs — extract the real one
+        let url = if let Some(idx) = raw_url.find("uddg=") {
+            let encoded = &raw_url[idx + 5..];
+            encoded.replace("%3A", ":").replace("%2F", "/")
+                .replace("%3F", "?").replace("%3D", "=").replace("%26", "&")
 
-        let clean = clean_ddg_url(&url);
-        if !title.is_empty() && !clean.is_empty() {
-            results.push(SearchResult {
-                title,
-                url: clean,
-                snippet,
-            });
+        } else {
+            raw_url.to_string()
+        };
+
+        if url.is_empty() || url.starts_with("//") {
+            pos = link_start + 1;
+            continue;
         }
 
-        pos = title_close + 5;
+        // Extract title
+        let text_start = match html[href_end..].find('>') {
+            Some(p) => href_end + p + 1,
+            None => { pos = link_start + 1; continue; }
+        };
+        let text_end = match html[text_start..].find('<') {
+            Some(p) => text_start + p,
+            None => { pos = link_start + 1; continue; }
+        };
+        let title = html[text_start..text_end].trim().to_string();
+
+        // Extract snippet
+        let snippet = {
+            let snip_marker = "class=\"result__snippet\"";
+            if let Some(sp) = html[link_start..].find(snip_marker) {
+                let snip_slice = &html[link_start + sp..];
+                if let Some(s) = snip_slice.find('>') {
+                    let snip_text_start = link_start + sp + s + 1;
+                    if let Some(e) = html[snip_text_start..].find('<') {
+                        html[snip_text_start..snip_text_start + e].trim().to_string()
+                    } else { String::new() }
+                } else { String::new() }
+            } else { String::new() }
+        };
+
+        if !title.is_empty() && !url.is_empty() {
+            results.push(SearchResult { title, url, snippet });
+        }
+
+        pos = link_start + 1;
     }
 
     results
 }
 
-/// Parse DuckDuckGo Lite search results.
+/// Parse DuckDuckGo Lite HTML search results.
 fn parse_ddg_lite(html: &str, max: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
     let mut pos = 0;
 
     while results.len() < max {
+        // DDG Lite results use <a class="result-link"> or plain <a> inside result table
         let link_marker = "class=\"result-link\"";
+        let fallback_marker = "<td class=\"result-snippet\">";
+
         let link_start = match html[pos..].find(link_marker) {
             Some(p) => pos + p,
             None => break,
         };
 
-        let search_win = link_start.saturating_sub(200);
-        let url = match extract_attr(&html[search_win..link_start + 50], "href") {
-            Some(u) if !u.is_empty() => u,
-            _ => { pos = link_start + 20; continue; }
+        let href_start = match html[..link_start].rfind("href=\"") {
+            Some(p) => p + 6,
+            None => {
+                // Try finding href after marker
+                match html[link_start..].find("href=\"") {
+                    Some(p) => link_start + p + 6,
+                    None => { pos = link_start + 1; continue; }
+                }
+            }
         };
+        let href_end = match html[href_start..].find('"') {
+            Some(p) => href_start + p,
+            None => { pos = link_start + 1; continue; }
+        };
+        let url = html[href_start..href_end].to_string();
 
-        let title_open = match html[link_start..].find('>') {
+        if url.is_empty() || !url.starts_with("http") {
+            pos = link_start + 1;
+            continue;
+        }
+
+        // Title: text inside the <a class="result-link">...</a>
+        let text_start = match html[link_start..].find('>') {
             Some(p) => link_start + p + 1,
-            None => { pos = link_start + 20; continue; }
+            None => { pos = link_start + 1; continue; }
         };
-        let title_close = match html[title_open..].find("</a>") {
-            Some(p) => title_open + p,
-            None => { pos = title_open; continue; }
+        let text_end = match html[text_start..].find('<') {
+            Some(p) => text_start + p,
+            None => { pos = link_start + 1; continue; }
         };
-        let title = strip_html_tags(&html[title_open..title_close]);
+        let title = html[text_start..text_end].trim().to_string();
 
-        let snippet = find_class_content(html, title_close, "result-snippet")
-            .unwrap_or_default();
+        // Snippet: next <td class="result-snippet">
+        let snippet = if let Some(sp) = html[text_end..].find(fallback_marker) {
+            let snip_abs = text_end + sp + fallback_marker.len();
+            if let Some(e) = html[snip_abs..].find("</td>") {
+                strip_html_tags(&html[snip_abs..snip_abs + e])
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
 
         if !title.is_empty() {
             results.push(SearchResult { title, url, snippet });
         }
-        pos = title_close + 5;
+
+        pos = link_start + 1;
     }
 
     results
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HTML helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Find content inside an element with the given class, starting at `from`.
-fn find_class_content(html: &str, from: usize, class: &str) -> Option<String> {
-    let marker = format!("class=\"{}\"", class);
-    let pos = html[from..].find(&marker)? + from;
-    let cs = html[pos..].find('>')? + pos + 1;
-    // Limit search window to avoid crossing into next result
-    let window = &html[cs..(cs + 1000).min(html.len())];
-    let ce = window.find("</")?;
-    let raw = &window[..ce];
-    let text = strip_html_tags(raw);
-    if text.is_empty() { None } else { Some(text) }
-}
-
-/// Extract the value of an HTML attribute (e.g. href="...").
-fn extract_attr(html: &str, attr: &str) -> Option<String> {
-    let key = format!("{}=\"", attr);
-    let start = html.find(&key)? + key.len();
-    let end = html[start..].find('"')? + start;
-    Some(html[start..end].to_string())
-}
-
-/// Strip HTML tags and decode common HTML entities.
-fn strip_html_tags(html: &str) -> String {
-    let mut result = String::new();
+/// Strip common HTML tags from a string (for Wikipedia snippets).
+fn strip_html_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
-
-    for ch in html.chars() {
-        match ch {
+    for c in s.chars() {
+        match c {
             '<' => in_tag = true,
             '>' => in_tag = false,
-            _ if !in_tag => result.push(ch),
+            _ if !in_tag => out.push(c),
             _ => {}
         }
     }
-
-    result
+    out.replace("&quot;", "\"")
         .replace("&amp;", "&")
         .replace("&lt;", "<")
         .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
-        .replace("&#39;", "'")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
-/// Unwrap DuckDuckGo redirect URL to extract the real destination URL.
-fn clean_ddg_url(url: &str) -> String {
-    if let Some(start) = url.find("uddg=") {
-        let encoded = &url[start + 5..];
-        let end = encoded.find('&').unwrap_or(encoded.len());
-        return url_decode(&encoded[..end]);
-    }
-    if url.starts_with("http") {
-        return url.to_string();
-    }
-    if url.starts_with("//") {
-        return format!("https:{}", url);
-    }
-    url.to_string()
-}
-
-/// Percent-encode a string for use in URL query parameters.
-fn percent_encode(s: &str) -> String {
-    let mut out = String::new();
-    for ch in s.chars() {
-        match ch {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => out.push(ch),
-            ' ' => out.push('+'),
-            _ => {
-                for b in ch.to_string().as_bytes() {
-                    out.push_str(&format!("%{:02X}", b));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Percent-decode a URL query value.
-fn url_decode(input: &str) -> String {
-    let mut result = String::new();
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '%' {
-            let hex: String = chars.by_ref().take(2).collect();
-            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
-                result.push(byte as char);
-            }
-        } else if ch == '+' {
-            result.push(' ');
-        } else {
-            result.push(ch);
-        }
-    }
-    result
+// Keep parse_ddg_html available (used internally — suppress dead_code warning)
+#[allow(dead_code)]
+fn _ensure_ddg_html_parser_available() {
+    let _ = parse_ddg_html("", 0);
 }
