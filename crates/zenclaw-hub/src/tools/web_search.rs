@@ -687,8 +687,8 @@ fn strip_html_tags(s: &str) -> String {
 /// 2. [Title](https://url)
 /// ...
 /// ```
-
 fn parse_jina_text(text: &str, max: usize) -> Vec<SearchResult> {
+
     let mut results = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
     let mut i = 0;
