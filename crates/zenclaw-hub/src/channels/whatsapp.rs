@@ -22,6 +22,9 @@ use zenclaw_core::agent::Agent;
 use zenclaw_core::error::{Result, ZenClawError};
 use zenclaw_core::memory::MemoryStore;
 use zenclaw_core::provider::LlmProvider;
+use tokio::process::Command;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 /// WhatsApp message from the bridge.
 #[derive(Debug, Deserialize)]
@@ -132,13 +135,40 @@ impl WhatsAppChannel {
         info!("📱 WhatsApp bot starting...");
         info!("🔗 Bridge: {}", self.bridge_url);
 
-        // Check bridge connectivity
+        // Check bridge connectivity. If down, start embedded bridge.
         match self.client.get(format!("{}/status", self.bridge_url)).send().await {
             Ok(resp) if resp.status().is_success() => {
                 info!("✅ Bridge connected");
             }
             _ => {
-                warn!("⚠️ Bridge not reachable at {}. Continuing anyway...", self.bridge_url);
+                warn!("⚠️ External bridge not reachable. Spawning built-in WhatsApp Web bridge...");
+                
+                let mut child = Command::new("node")
+                    .arg("bridge/bridge.js")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|e| ZenClawError::Other(format!("Failed to spawn bridge: {}. Is Node.js installed?", e)))?;
+                
+                let stdout = child.stdout.take().unwrap();
+                let stderr = child.stderr.take().unwrap();
+                
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stdout).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        println!("{}", line);
+                    }
+                });
+
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        eprintln!("{}", line);
+                    }
+                });
+                
+                info!("⏳ Waiting for bridge to initialize...");
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         }
 

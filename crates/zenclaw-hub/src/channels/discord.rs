@@ -15,6 +15,7 @@ use zenclaw_core::agent::Agent;
 use zenclaw_core::error::{Result, ZenClawError};
 use zenclaw_core::memory::MemoryStore;
 use zenclaw_core::provider::LlmProvider;
+use zenclaw_core::bus::EventBus;
 
 /// Discord bot configuration.
 #[derive(Debug, Clone)]
@@ -140,14 +141,67 @@ impl DiscordChannel {
                                             }
                                         );
 
-                                        // Send typing indicator
-                                        let _ = send_typing(
+                                        // Send initial thinking message
+                                        let mut initial_msg_id = None;
+                                        if let Ok(msg) = send_message(
                                             &client,
                                             &api_base,
                                             &bot_token,
                                             channel_id,
+                                            "🧠 *Process Started...*",
                                         )
-                                        .await;
+                                        .await {
+                                            initial_msg_id = Some(msg.id);
+                                        }
+
+                                        let bus = EventBus::new(32);
+                                        let mut rx = bus.subscribe_system();
+                                        let bg_client = client.clone();
+                                        let bg_api_base = api_base.clone();
+                                        let bg_bot_token = bot_token.clone();
+                                        let bg_channel_id = channel_id.to_string();
+                                        let msg_id_clone = initial_msg_id.clone();
+                                        
+                                        let _bg_task = tokio::spawn(async move {
+                                            if let Some(msg_id) = msg_id_clone {
+                                                let mut last_status = String::new();
+                                                while let Ok(event) = rx.recv().await {
+                                                    let mut new_status = String::new();
+                                                    match event.event_type.as_str() {
+                                                        "agent_think" => {
+                                                            let it = event.data["iteration"].as_u64().unwrap_or(0);
+                                                            new_status = format!("🧠 *Thinking...* (iteration {})", it);
+                                                        }
+                                                        "tool_use" => {
+                                                            if let Some(tool) = event.data["tool"].as_str() {
+                                                                new_status = format!("🛠️ *Using tool:* `{}`", tool);
+                                                            }
+                                                        }
+                                                        "tool_result" => {
+                                                            if let Some(tool) = event.data["tool"].as_str() {
+                                                                new_status = format!("✅ *Finished tool:* `{}`", tool);
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+
+                                                    if !new_status.is_empty() && new_status != last_status {
+                                                        last_status = new_status.clone();
+                                                        let _ = edit_message(
+                                                            &bg_client,
+                                                            &bg_api_base,
+                                                            &bg_bot_token,
+                                                            &bg_channel_id,
+                                                            &msg_id,
+                                                            &new_status,
+                                                        ).await;
+                                                        
+                                                        // Delay to avoid hitting Discord API rate limits
+                                                        tokio::time::sleep(Duration::from_millis(1000)).await;
+                                                    }
+                                                }
+                                            }
+                                        });
 
                                         // Process through agent
                                         match agent
@@ -156,11 +210,15 @@ impl DiscordChannel {
                                                 memory.as_ref(),
                                                 content,
                                                 &session_key,
-                                                None,
+                                                Some(&bus),
                                             )
                                             .await
                                         {
                                             Ok(response) => {
+                                                if let Some(msg_id) = initial_msg_id {
+                                                    let _ = delete_message(&client, &api_base, &bot_token, channel_id, &msg_id).await;
+                                                }
+
                                                 // Split long messages (Discord limit: 2000)
                                                 for chunk in split_message(&response, 1900) {
                                                     let _ = send_message(
@@ -174,6 +232,10 @@ impl DiscordChannel {
                                                 }
                                             }
                                             Err(e) => {
+                                                if let Some(msg_id) = initial_msg_id {
+                                                    let _ = delete_message(&client, &api_base, &bot_token, channel_id, &msg_id).await;
+                                                }
+
                                                 error!("Agent error: {}", e);
                                                 let _ = send_message(
                                                     &client,
@@ -321,9 +383,9 @@ async fn send_message(
     token: &str,
     channel_id: &str,
     content: &str,
-) -> Result<()> {
+) -> Result<DiscordMessage> {
     let url = format!("{}/channels/{}/messages", api_base, channel_id);
-    client
+    let resp = client
         .post(&url)
         .header("Authorization", format!("Bot {}", token))
         .json(&SendMessageBody {
@@ -331,18 +393,40 @@ async fn send_message(
         })
         .send()
         .await?;
-    Ok(())
+    let msg: DiscordMessage = resp.json().await.map_err(|e| ZenClawError::Provider(e.to_string()))?;
+    Ok(msg)
 }
 
-async fn send_typing(
+async fn edit_message(
     client: &Client,
     api_base: &str,
     token: &str,
     channel_id: &str,
+    message_id: &str,
+    content: &str,
 ) -> Result<()> {
-    let url = format!("{}/channels/{}/typing", api_base, channel_id);
+    let url = format!("{}/channels/{}/messages/{}", api_base, channel_id, message_id);
     let _ = client
-        .post(&url)
+        .patch(&url)
+        .header("Authorization", format!("Bot {}", token))
+        .json(&SendMessageBody {
+            content: content.to_string(),
+        })
+        .send()
+        .await;
+    Ok(())
+}
+
+async fn delete_message(
+    client: &Client,
+    api_base: &str,
+    token: &str,
+    channel_id: &str,
+    message_id: &str,
+) -> Result<()> {
+    let url = format!("{}/channels/{}/messages/{}", api_base, channel_id, message_id);
+    let _ = client
+        .delete(&url)
         .header("Authorization", format!("Bot {}", token))
         .send()
         .await;

@@ -18,9 +18,11 @@ rusqlite = { workspace = true }
 chrono = { workspace = true }
 cron = { workspace = true }
 uuid = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
 hostname = "0.4"
 dirs = { workspace = true }
 axum = { workspace = true }
+wa-rs = "0.2.0"
 
 [dev-dependencies]
 tempfile = "3"

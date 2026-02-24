@@ -14,16 +14,20 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::Json,
+    response::sse::{Event, Sse},
     routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+use tokio_stream::wrappers::ReceiverStream;
+use core::convert::Infallible;
 use tracing::info;
 
 use zenclaw_core::agent::Agent;
 use zenclaw_core::memory::MemoryStore;
 use zenclaw_core::provider::LlmProvider;
+use zenclaw_core::bus::EventBus;
 
 use crate::memory::RagStore;
 
@@ -151,6 +155,56 @@ async fn chat(
     }
 }
 
+async fn chat_stream(
+    State(state): State<SharedState>,
+    Json(req): Json<ChatRequest>,
+) -> Sse<ReceiverStream<Result<Event, Infallible>>> {
+    let (tx, rx) = mpsc::channel(128);
+
+    let bus = EventBus::new(32);
+    let mut bus_rx = bus.subscribe_system();
+
+    // The state and trait objects need to be cloned/Arc'd to be spawned, 
+    // but we can't easily move s.agent and s.provider. 
+    // So let's clone the Agent and use a specialized spawn.
+    // However, they aren't clonable easily. 
+    // Wait, the agent.process requires &self, provider, memory.
+    // Instead of spawning agent, we can run agent in another tokio task but we need Arc<Mutex<...>>.
+    let shared_state = state.clone();
+    let message = req.message.clone();
+    let session = req.session.clone();
+
+    // Background task listening to EventBus
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        while let Ok(event) = bus_rx.recv().await {
+            let data_str = serde_json::to_string(&event.data).unwrap_or_default();
+            let sse_event = Event::default().event(event.event_type.clone()).data(data_str);
+            if tx_clone.send(Ok(sse_event)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let tx_for_agent = tx.clone();
+    tokio::spawn(async move {
+        let s2 = shared_state.lock().await;
+        let p = s2.provider.as_ref();
+        let m = s2.memory.as_ref();
+
+        match s2.agent.process(p, m, &message, &session, Some(&bus)).await {
+            Ok(response) => {
+                let _ = tx_for_agent.send(Ok(Event::default().event("result").data(response))).await;
+            }
+            Err(e) => {
+                let _ = tx_for_agent.send(Ok(Event::default().event("error").data(e.to_string()))).await;
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx))
+}
+
 async fn rag_index(
     State(state): State<SharedState>,
     Json(req): Json<RagIndexRequest>,
@@ -226,6 +280,7 @@ pub fn build_router(state: SharedState) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/status", get(status))
         .route("/v1/chat", post(chat))
+        .route("/v1/chat/stream", post(chat_stream))
         .route("/v1/rag/index", post(rag_index))
         .route("/v1/rag/search", post(rag_search))
         .with_state(state)
