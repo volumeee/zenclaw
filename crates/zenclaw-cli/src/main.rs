@@ -249,7 +249,9 @@ fn resolve_api_key(provided: Option<&str>, provider: &str) -> Option<String> {
     let env_vars = match provider {
         "openai" => vec!["OPENAI_API_KEY"],
         "openrouter" => vec!["OPENROUTER_API_KEY"],
+        "groq" => vec!["GROQ_API_KEY"],
         "gemini" => vec!["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+
         "anthropic" => vec!["ANTHROPIC_API_KEY"],
         "ollama" | "lmstudio" => return Some("local".to_string()),
         _ => vec![],
@@ -270,6 +272,7 @@ fn default_model(provider: &str) -> &str {
     match provider {
         "openai" => "gpt-4o-mini",
         "openrouter" => "openai/gpt-4o-mini",
+        "groq" => "llama-3.3-70b-versatile",
         "gemini" => "gemini-2.5-flash",
 
         "anthropic" => "claude-3-5-sonnet-20241022",
@@ -289,7 +292,9 @@ fn create_provider(
         "ollama" => OpenAiProvider::ollama(model),
         "openrouter" => OpenAiProvider::openrouter(api_key, model),
         "gemini" => OpenAiProvider::gemini(api_key, model),
+        "groq" => OpenAiProvider::groq(api_key, model),
         _ => {
+
             if let Some(base) = api_base {
                 OpenAiProvider::new(ProviderConfig {
                     provider: provider_name.to_string(),
@@ -379,8 +384,10 @@ fn resolve_config(
                     "openai" => "OPENAI_API_KEY",
                     "gemini" => "GEMINI_API_KEY",
                     "openrouter" => "OPENROUTER_API_KEY",
+                    "groq" => "GROQ_API_KEY",
                     _ => "<PROVIDER>_API_KEY",
                 },
+
                 "--api-key <KEY>".cyan()
             )
         })?;

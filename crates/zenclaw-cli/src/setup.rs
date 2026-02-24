@@ -59,6 +59,22 @@ const PROVIDERS: &[ProviderInfo] = &[
         needs_key: true,
     },
     ProviderInfo {
+        name: "groq",
+        display: "⚡ Groq (Extremely fast, Free options)",
+        models: &[
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "mixtral-8x7b-32768",
+            "gemma2-9b-it",
+            "deepseek-r1-distill-llama-70b",
+        ],
+        default_model: "llama-3.3-70b-versatile",
+        env_var: "GROQ_API_KEY",
+        api_base: Some("https://api.groq.com/openai/v1"),
+        needs_key: true,
+    },
+
+    ProviderInfo {
         name: "openrouter",
         display: "🌐 OpenRouter (100+ models, pay-per-use)",
         models: &[
@@ -149,7 +165,9 @@ pub fn run_setup() -> anyhow::Result<()> {
                 match provider.name {
                     "openai" => "https://platform.openai.com/api-keys",
                     "gemini" => "https://aistudio.google.com/apikey",
+                    "groq" => "https://console.groq.com/keys",
                     "openrouter" => "https://openrouter.ai/keys",
+
                     _ => "your provider's website",
                 }
             )

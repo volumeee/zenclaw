@@ -82,7 +82,19 @@ impl OpenAiProvider {
             ..Default::default()
         })
     }
+
+    /// Create a provider for Groq (via OpenAI-compatible endpoint).
+    pub fn groq(api_key: &str, model: &str) -> Self {
+        Self::new(ProviderConfig {
+            provider: "groq".to_string(),
+            model: model.to_string(),
+            api_key: Some(api_key.to_string()),
+            api_base: Some("https://api.groq.com/openai/v1".to_string()),
+            ..Default::default()
+        })
+    }
 }
+
 
 /// Internal request body.
 #[derive(Serialize)]
