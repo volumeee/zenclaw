@@ -115,39 +115,70 @@ impl Tool for WebSearchTool {
         let mut all_results: Vec<SearchResult> = Vec::new();
         let mut seen_urls: HashSet<String> = HashSet::new();
 
-        // ── Strategy 1: DDG Instant Answer API (JSON) ─────────────────────
-        // Returns direct answers, abstracts, related topics — no HTML parsing
-        if let Some(instant) = self.ddg_instant(query).await {
+        // ── Run all engines in parallel ───────────────────────────────────
+        let (instant_opt, ddg_results, lite_results, wiki_results) = tokio::join!(
+            self.ddg_instant(query),
+            self.ddg_html(query, max_results, lang),
+            self.ddg_lite(query, max_results, lang),
+            self.wikipedia_search(query, 4, lang),
+        );
+
+        // ── Strategy 1: DDG Instant Answer (direct factual answer) ────────
+        if let Some(instant) = instant_opt {
             output.push_str(&instant);
             output.push_str("\n\n");
         }
 
-        // ── Strategy 2: DDG HTML (full web results) ───────────────────────
-        let ddg_results = self.ddg_html(query, max_results, lang).await;
+        // ── Strategy 2: DDG HTML results ──────────────────────────────────
         for r in ddg_results {
             if seen_urls.insert(r.url.clone()) {
                 all_results.push(r);
             }
         }
 
-        // ── Strategy 3: DDG Lite (fallback if HTML returned < 3 results) ──
-        if all_results.len() < 3 {
-            tracing::info!("web_search: DDG HTML got {} results, trying DDG Lite", all_results.len());
-            let lite_results = self.ddg_lite(query, max_results, lang).await;
-            for r in lite_results {
-                if seen_urls.insert(r.url.clone()) {
-                    all_results.push(r);
-                }
-            }
-        }
-
-        // ── Strategy 4: Wikipedia (for factual queries, always helpful) ───
-        let wiki_results = self.wikipedia_search(query, 3, lang).await;
-        for r in wiki_results {
+        // ── Strategy 3: DDG Lite (always merge, dedup handles overlap) ───
+        for r in lite_results {
             if seen_urls.insert(r.url.clone()) {
                 all_results.push(r);
             }
         }
+
+        // ── Strategy 4: Wikipedia (always — best for factual queries) ─────
+        let mut wiki_top_url: Option<String> = None;
+        for r in wiki_results {
+            if wiki_top_url.is_none() {
+                wiki_top_url = Some(r.url.clone());
+            }
+            if seen_urls.insert(r.url.clone()) {
+                all_results.push(r);
+            }
+        }
+
+        // ── Strategy 5: Jina Reader — fetch full Wikipedia article text ───
+        // Only when no instant answer was found (common on restricted networks).
+        // Fetches the top Wikipedia article for richer factual context.
+        if output.trim().is_empty() && let Some(wiki_url) = wiki_top_url {
+            tracing::info!("web_search: fetching full article via Jina Reader: {}", wiki_url);
+            let jina_url = format!("https://r.jina.ai/{}", wiki_url);
+            if let Ok(resp) = self.client.get(&jina_url)
+                .header("Accept", "text/plain")
+                .send().await
+                && let Ok(text) = resp.text().await
+            {
+                let trimmed = if text.len() > 1500 {
+                    format!("{}...\n*(truncated — use web_fetch for full article)*", &text[..1500])
+                } else {
+                    text
+                };
+                if trimmed.len() > 100 {
+                    output.push_str("## Wikipedia Article (via Jina Reader)\n\n");
+                    output.push_str(&trimmed);
+                    output.push_str("\n\n");
+                }
+            }
+        }
+
+
 
         // ── Compile final output ──────────────────────────────────────────
         let take = all_results.len().min(max_results);

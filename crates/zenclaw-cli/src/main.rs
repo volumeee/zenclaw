@@ -223,24 +223,22 @@ enum SkillAction {
 // ─── Helpers ───────────────────────────────────────────────
 
 fn print_banner() {
+    let version = env!("CARGO_PKG_VERSION");
+    let title = format!("    ║        ⚡ ZenClaw v{} ⚡         ║", version);
     println!();
     println!(
         "{}",
         "    ╔══════════════════════════════════════╗".cyan()
     );
-    println!(
-        "{}",
-        "    ║        ⚡ ZenClaw v0.1.0 ⚡         ║".cyan()
-    );
+    println!("{}", title.cyan());
     println!(
         "{}",
         "    ║   Build AI the simple way 🦀        ║".cyan()
     );
     println!(
         "{}",
-        "    ╚══════════════════════════════════════╝".cyan()
+        "    ╚══════════════════════════════════════╝\n".cyan()
     );
-    println!();
 }
 
 fn resolve_api_key(provided: Option<&str>, provider: &str) -> Option<String> {
