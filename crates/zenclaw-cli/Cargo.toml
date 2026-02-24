@@ -27,3 +27,4 @@ dialoguer = { workspace = true }
 console = { workspace = true }
 chrono = { workspace = true }
 tracing-appender = "0.2"
+termimad = "0.34.1"

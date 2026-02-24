@@ -865,7 +865,18 @@ async fn run_chat(
         match agent.process(&provider, &memory, input, session_key, Some(&bus)).await {
             Ok(response) => {
                 spinner.finish_and_clear();
-                println!("\n{} {}\n", "AI ›".cyan().bold(), response);
+                
+                // Print stylish Markdown output using termimad
+                println!("\n{} ", "AI ›".cyan().bold());
+                
+                // Create a clean skin
+                let mut skin = termimad::MadSkin::default();
+                skin.set_headers_fg(termimad::crossterm::style::Color::Cyan);
+                skin.bold.set_fg(termimad::crossterm::style::Color::Yellow);
+                skin.italic.set_fg(termimad::crossterm::style::Color::Green);
+                
+                skin.print_text(&response);
+                println!();
             }
             Err(e) => {
                 spinner.finish_and_clear();
