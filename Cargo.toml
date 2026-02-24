@@ -7,10 +7,10 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 license = "MIT"
-authors = ["baguse <bagus@intelove.com>"]
+authors = ["baguse <mr.volumee@gmail.com>"]
 repository = "https://github.com/volumeee/zenclaw"
 description = "ZenClaw — Build AI the simple way. Lightweight AI agent framework for embedded & edge devices."
 

@@ -1,11 +1,17 @@
-name: Release
+name: Release (Manual)
 
-# Triggered automatically when CI pushes a vX.Y.Z tag after version bump.
-# You can also trigger manually by pushing a tag: git tag v1.2.3 && git push origin v1.2.3
+# This workflow is for MANUAL releases only.
+# For automatic releases, the CI workflow handles it when Cargo.toml version changes.
+# Trigger manually: git tag v1.2.3 && git push origin v1.2.3
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.2.3)"
+        required: true
 
 permissions:
   contents: write
@@ -14,30 +20,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ── Create the GitHub Release entry first ─────────────────────────────────
-  create_release:
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: "ZenClaw ${{ steps.version.outputs.version }}"
-          generate_release_notes: true
-          draft: false
-          prerelease: false
-
-  # ── Build binaries for all platforms ──────────────────────────────────────
-  build-and-upload:
-    name: Build & Upload (${{ matrix.name }})
-    needs: create_release
+  build-and-release:
+    name: Build & Release (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -50,7 +34,6 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             name: zenclaw-linux-aarch64
-            cross: true
 
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -73,10 +56,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: manual-${{ matrix.target }}
 
-      # ARM64 cross-compilation on Linux
-      - name: Install cross-compilation tools (aarch64)
+      - name: Install cross-compilation tools (aarch64 Linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update -qq
@@ -95,8 +77,6 @@ jobs:
           cp target/${{ matrix.target }}/release/zenclaw dist/${{ matrix.name }}
           chmod +x dist/${{ matrix.name }}
           tar -czf dist/${{ matrix.name }}.tar.gz -C dist ${{ matrix.name }}
-          # Print binary size for reference
-          ls -lh dist/${{ matrix.name }}
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
@@ -104,12 +84,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/zenclaw.exe dist/${{ matrix.name }}.exe
-          cd dist
-          7z a ${{ matrix.name }}.zip ${{ matrix.name }}.exe
+          cd dist && 7z a ${{ matrix.name }}.zip ${{ matrix.name }}.exe
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
           files: |
             dist/*.tar.gz
             dist/*.zip
