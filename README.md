@@ -583,21 +583,29 @@ scp target/aarch64-unknown-linux-gnu/release/zenclaw pi@raspberrypi:~/
 
 ## 🤝 Contributing
 
+We welcome all contributions — bug fixes, new tools, channel adapters, LLM providers, docs, and hardware testing reports!
+
 ```bash
+# Quick setup
 git clone https://github.com/volumeee/zenclaw.git
 cd zenclaw
-cargo build                       # Dev build
-cargo test                        # Run tests
-RUSTFLAGS="-D warnings" cargo build  # Strict mode
-cargo build --release             # Optimized (~5.1MB)
+
+cargo build                              # Dev build
+cargo test --workspace                   # Run all tests
+cargo clippy --workspace -- -D warnings  # Linter (must pass, zero warnings)
+cargo fmt --all                          # Auto-format
+cargo build --release                    # Optimized binary (~5.1MB)
 ```
 
-Create a release:
+**Releases are automatic** — just bump the version in `Cargo.toml` and push. CI detects the change, creates the tag, and builds all platform binaries automatically.
 
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-# → GitHub Actions auto-builds for 4 platforms
-```
+> 📖 See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for the full guide including:
+>
+> - Branch strategy and commit conventions
+> - How to add a new tool, provider, or channel
+> - 🤖 **AI-assisted contribution policy** (disclosure required)
+> - Pull request template and review process
+> - Security review checklist for AI-generated code
 
 ---
 
