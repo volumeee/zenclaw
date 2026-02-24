@@ -22,22 +22,23 @@
 
 ## Why ZenClaw?
 
-ZenClaw is built for the edge — where resources are scarce and reliability matters. Unlike bloated Node.js or Python systems, ZenClaw runs everywhere without eating up your RAM.
+ZenClaw's core is built in Rust — giving you a tiny, fast, self-contained binary. For features that require browser-level access (WhatsApp and headless web scraping), it delegates to a lightweight **optional Node.js bridge** that runs alongside the Rust binary.
 
 ### Comparison with Popular Agent Frameworks
 
 |                      | [**ZenClaw**](https://github.com/volumeee/zenclaw) | [**OpenClaw**](https://github.com/openclaw/openclaw) | [**NanoClaw**](https://github.com/gavrielc/nanoclaw) | [**PicoClaw**](https://github.com/sipeed/picoclaw) |
 | -------------------- | -------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- | -------------------------------------------------- |
-| **Language**         | Rust 🦀                                            | TypeScript / Node.js                                 | TypeScript                                           | Go                                                 |
-| **Footprint / Size** | **5.1 MB Binary**                                  | > 200MB (Node Modules)                               | Containerized (>100MB)                               | ~10MB Binary                                       |
-| **Idle RAM Usage**   | **~12 MB**                                         | ~800MB – 1.5GB                                       | ~200MB – 500MB                                       | ~15 MB                                             |
+| **Language**         | Rust 🦀 + Node.js bridge (opt.)                    | TypeScript / Node.js                                 | TypeScript                                           | Go                                                 |
+| **Core Binary Size** | **5.1 MB**                                         | > 200MB (Node Modules)                               | Containerized (>100MB)                               | ~10MB Binary                                       |
+| **Idle RAM (core)**  | **~12 MB**                                         | ~800MB – 1.5GB                                       | ~200MB – 500MB                                       | ~15 MB                                             |
 | **Boot time**        | **< 100ms**                                        | 2–5s                                                 | 1–3s                                                 | < 1s                                               |
-| **Dependencies**     | **0 (Zero)**                                       | Node.js 18+, OS libs                                 | Node.js, Container Runtime                           | 0 (Zero)                                           |
-| **Architecture**     | Native Binary (Static)                             | Client-Server / Gateway                              | Agent Containers                                     | Native Binary (Static)                             |
-| **RAG System**       | **✅ SQLite built-in**                             | ChromaDB / External                                  | Vector Search / Files                                | MarkDown Files                                     |
-| **Edge/ARM ready**   | **✅ Yes (Pi Zero/STB)**                           | ❌ Too Heavy                                         | ⚠️ Requires Docker                                   | ✅ Yes (RISC-V/ARM)                                |
+| **Runtime deps**     | **None (core)** / Node.js 18+ (WhatsApp+Scrape)    | Node.js 18+, OS libs                                 | Node.js, Container Runtime                           | 0 (Zero)                                           |
+| **Architecture**     | Hybrid: Native Binary + optional Node.js bridge    | Client-Server / Gateway                              | Agent Containers                                     | Native Binary (Static)                             |
+| **RAG System**       | **✅ SQLite FTS5 built-in**                        | ChromaDB / External                                  | Vector Search / Files                                | MarkDown Files                                     |
+| **Edge/ARM ready**   | **✅ Yes (Pi Zero/STB)** (core only)               | ❌ Too Heavy                                         | ⚠️ Requires Docker                                   | ✅ Yes (RISC-V/ARM)                                |
 
-> **ZenClaw** gives you a production-ready AI agent in a **single 5.1MB binary** — with built-in tools, channels, RAG, and a REST API. Deploy it on a $10 Set-Top Box or a $5 Raspberry Pi Zero.
+> **ZenClaw core** runs as a single **5.1MB Rust binary** — zero dependencies needed for CLI, Telegram, Discord, REST API, and RAG.
+> **WhatsApp** and **web scraping** use the optional `bridge/` Node.js helper (Puppeteer + whatsapp-web.js).
 
 ---
 
@@ -125,36 +126,46 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 ## 🏗️ Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        ZenClaw Runtime                          │
-│                                                                  │
-│  ┌─────────────┐   ┌──────────────┐   ┌───────────────────────┐ │
-│  │   Channels   │   │  Agent Core  │   │       Tools           │ │
-│  │             │   │              │   │                       │ │
-│  │  • CLI      │──▶│  ReAct Loop  │──▶│  • exec (shell)      │ │
-│  │  • REST API │   │              │   │  • read/write/edit    │ │
-│  │  • Telegram │   │  ┌────────┐  │   │  • list_dir           │ │
-│  │  • Discord  │   │  │ Router │  │   │  • web_fetch          │ │
-│  │  • WhatsApp │   │  └────────┘  │   │  • web_search         │ │
-│  └─────────────┘   │              │   │  • cron               │ │
-│                    │  ┌────────┐  │   │  • system_info        │ │
-│  ┌─────────────┐   │  │ Skills │  │   │  • health             │ │
-│  │  Providers  │   │  └────────┘  │   │  • history            │ │
-│  │             │   └──────────────┘   │  • index_file         │ │
-│  │  • OpenAI   │          │           │  • webhooks           │ │
-│  │  • Gemini   │          ▼           │  • env                │ │
-│  │  • Ollama   │   ┌──────────────┐   │  • + plugins          │ │
-│  │  • Router   │   │    Memory    │   └───────────────────────┘ │
-│  │  • LMStudio │   │              │                             │
-│  └─────────────┘   │  • SQLite    │   ┌───────────────────────┐ │
-│                    │  • RAG/FTS5  │   │     Middleware         │ │
-│  ┌─────────────┐   │  • InMemory  │   │  • Rate limiter       │ │
-│  │  Plugins    │   └──────────────┘   │  • API key auth       │ │
-│  │  (shell     │                      │  • Request logging     │ │
-│  │   scripts)  │   ┌──────────────┐   │  • Metrics             │ │
-│  └─────────────┘   │   Updater    │   └───────────────────────┘ │
-│                    └──────────────┘                              │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     ZenClaw Runtime (Rust Binary ~5.1MB)               │
+│                                                                         │
+│  ┌──────────────┐   ┌──────────────┐   ┌───────────────────────────┐   │
+│  │   Channels    │   │  Agent Core  │   │         Tools             │   │
+│  │              │   │              │   │                           │   │
+│  │  • CLI       │──▶│  ReAct Loop  │──▶│  • exec (shell)          │   │
+│  │  • REST API  │   │              │   │  • read/write/edit/list   │   │
+│  │  • Telegram  │   │  ┌────────┐  │   │  • web_fetch              │   │
+│  │  • Discord   │   │  │ Router │  │   │  • web_scrape ──────────────────────┐
+│  │  • WhatsApp ─│───│──│────────│──│───│──────────────────────────         │
+│  └──────────────┘   │  └────────┘  │   │  • web_search             │       │
+│          │          │  ┌────────┐  │   │  • cron / health          │       │
+│          │          │  │ Skills │  │   │  • history / index_file   │       │
+│          │          │  └────────┘  │   │  • webhooks / env         │       │
+│          │          └──────────────┘   │  • + plugins              │       │
+│          │                 │           └───────────────────────────┘       │
+│  ┌───────────────┐         ▼                                               │
+│  │   Providers   │  ┌──────────────┐   ┌───────────────────────────┐      │
+│  │  • OpenAI     │  │    Memory    │   │       Middleware           │      │
+│  │  • Gemini     │  │  • SQLite    │   │  • Rate limiter           │      │
+│  │  • Ollama     │  │  • RAG/FTS5  │   │  • API key auth           │      │
+│  │  • OpenRouter │  └──────────────┘   │  • Request logging        │      │
+│  │  • LM Studio  │                     └───────────────────────────┘      │
+│  └───────────────┘                                                         │
+└────────────────────────────────────────────────────────────────────────────┘
+         │ HTTP poll                             │ spawns process
+         ▼                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              bridge/  (Node.js 18+ — optional, only for WA & scraping)     │
+│                                                                             │
+│  bridge.js  ─  WhatsApp Web via whatsapp-web.js + Puppeteer               │
+│    • QR code scan on first run                                              │
+│    • Exposes HTTP: GET /messages  POST /send  GET /status (port 3001)      │
+│                                                                             │
+│  scrape.js  ─  Headless Chromium scraper via Puppeteer                    │
+│    • Anti-bot evasion (User-Agent, networkidle2)                           │
+│    • Strips nav/header/footer/scripts → returns clean plain text           │
+│    • Called as subprocess by web_scrape tool (Rust spawns node scrape.js) │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Crate Structure
@@ -210,12 +221,20 @@ zenclaw/                                    8,976 lines of Rust
 │       ├── main.rs                         CLI commands (12 commands)
 │       └── setup.rs                        Interactive TUI wizard
 │
-├── bridge/                                 Node.js Puppeteer bridge
+├── bridge/                                 Node.js bridge (WhatsApp + Scraper)
+│   ├── bridge.js                           WhatsApp Web HTTP bridge (port 3001)
+│   │                                         whatsapp-web.js + Puppeteer
+│   │                                         Endpoints: /messages /send /status
+│   ├── scrape.js                           Headless Chromium scraper
+│   │                                         Puppeteer-based, strips bloat → plain text
+│   │                                         Spawned as subprocess by web_scrape tool
+│   └── package.json                        Dependencies: puppeteer, whatsapp-web.js,
+│                                             express, body-parser, qrcode-terminal
 ├── Dockerfile                              Multi-stage build
 ├── docker-compose.yml                      One-command deploy
 ├── .github/workflows/
-│   ├── ci.yml                              Test & build on push
-│   └── release.yml                         Auto-release on tag
+│   ├── ci.yml                              Check/lint/test + auto-tag+build on version bump
+│   └── release.yml                         Manual release on tag push
 └── README.md
 ```
 
@@ -305,10 +324,24 @@ zenclaw discord --token "YOUR_DISCORD_TOKEN"
 
 ### WhatsApp Bot
 
+WhatsApp requires the **Node.js bridge** (uses `whatsapp-web.js` + Puppeteer to drive WhatsApp Web).
+
 ```bash
-# Requires a Baileys HTTP bridge running separately
+# Step 1: Start the Node.js bridge first
+cd bridge/
+npm install          # First time only
+node bridge.js       # Scan the QR code with your phone
+
+# Step 2: Start ZenClaw WhatsApp (in a new terminal)
 zenclaw whatsapp --bridge http://localhost:3001
 ```
+
+The bridge exposes a local HTTP API on port `3001`:
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/messages` | `GET` | Poll new incoming messages (cleared after read) |
+| `/send` | `POST` | Send a message `{"to": "628xxx@c.us", "message": "Hi"}` |
+| `/status` | `GET` | Check bridge ready status |
 
 ### Docker
 
