@@ -156,6 +156,7 @@ impl DiscordChannel {
                                                 memory.as_ref(),
                                                 content,
                                                 &session_key,
+                                                None,
                                             )
                                             .await
                                         {

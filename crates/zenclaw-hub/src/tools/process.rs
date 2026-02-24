@@ -99,6 +99,10 @@ Actions:
                 "process_id": {
                     "type": "string",
                     "description": "The ID of the process (required for 'status' and 'kill')."
+                },
+                "auto_restart": {
+                    "type": "boolean",
+                    "description": "If true, the background process will automatically restart if it exits/crashes."
                 }
             },
             "required": ["action"]
@@ -131,8 +135,9 @@ Actions:
                 let output_clone = output.clone();
                 let max_size = self.max_output_size;
 
-                let id_clone = id.clone();
+                let auto_restart = args["auto_restart"].as_bool().unwrap_or(false);
 
+                let id_clone = id.clone();
                 let command_clone = command_str.clone();
 
                 tokio::spawn(async move {
@@ -141,28 +146,48 @@ Actions:
                     #[cfg(not(target_os = "windows"))]
                     let (shell, arg) = ("sh", "-c");
 
-                    let mut cmd = Command::new(shell);
-                    cmd.arg(arg)
+                    let mut is_first_run = true;
+                    let mut rx_wrapper = Some(kill_rx);
+
+                    loop {
+                        if !is_first_run {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                            
+                            // Rehydrate the process status to running
+                            let mut map = processes.lock().await;
+                            if let Some(p) = map.get_mut(&id_clone) {
+                                if p.status == ProcessStatus::Killed {
+                                    break;
+                                }
+                                p.status = ProcessStatus::Running;
+                                let mut out = p.output.lock().await;
+                                out.push_str("\n\n--- [Auto-Restarting Process] ---\n\n");
+                            }
+                        }
+                        is_first_run = false;
+
+                        let mut cmd = Command::new(shell);
+                        cmd.arg(arg)
                        .arg(&command_clone)
                        .stdout(Stdio::piped())
                        .stderr(Stdio::piped());
 
-                    let mut child_process = match cmd.spawn() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            let mut map = processes.lock().await;
-                            if let Some(p) = map.get_mut(&id_clone) {
-                                p.status = ProcessStatus::Failed(e.to_string());
+                        let mut child_process = match cmd.spawn() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                let mut map = processes.lock().await;
+                                if let Some(p) = map.get_mut(&id_clone) {
+                                    p.status = ProcessStatus::Failed(e.to_string());
+                                }
+                                if auto_restart { continue; } else { return; }
                             }
-                            return;
-                        }
-                    };
+                        };
 
-                    let stdout = child_process.stdout.take().unwrap();
-                    let stderr = child_process.stderr.take().unwrap();
+                        let stdout = child_process.stdout.take().unwrap();
+                        let stderr = child_process.stderr.take().unwrap();
 
-                    let out_ref1 = output_clone.clone();
-                    let out_ref2 = output_clone.clone();
+                        let out_ref1 = output_clone.clone();
+                        let out_ref2 = output_clone.clone();
 
                     // Readers for stdout and stderr appending to the string
                     let read_stdout = async move {
@@ -191,28 +216,40 @@ Actions:
                         }
                     };
 
-                    tokio::select! {
-                        _ = kill_rx => {
-                            let _ = child_process.kill().await;
-                            let mut map = processes.lock().await;
-                            if let Some(p) = map.get_mut(&id_clone) {
-                                p.status = ProcessStatus::Killed;
-                            }
-                        }
-                        status = child_process.wait() => {
-                            // Finish reading the streams
-                            tokio::join!(read_stdout, read_stderr);
-                            
-                            let mut map = processes.lock().await;
-                            if let Some(p) = map.get_mut(&id_clone) {
-                                let status_result: std::io::Result<std::process::ExitStatus> = status;
-                                match status_result {
-                                    Ok(exit_status) => p.status = ProcessStatus::Finished(exit_status.code().unwrap_or(0)),
-                                    Err(e) => p.status = ProcessStatus::Failed(e.to_string()),
+                        let current_rx = rx_wrapper.take();
+
+                        match current_rx {
+                            Some(mut rx) => {
+                                tokio::select! {
+                                    _ = &mut rx => {
+                                        let _ = child_process.kill().await;
+                                        let mut map = processes.lock().await;
+                                        if let Some(p) = map.get_mut(&id_clone) {
+                                            p.status = ProcessStatus::Killed;
+                                        }
+                                        break; // fully killed
+                                    }
+                                    status = child_process.wait() => {
+                                        tokio::join!(read_stdout, read_stderr);
+                                        let mut map = processes.lock().await;
+                                        if let Some(p) = map.get_mut(&id_clone) {
+                                            let status_result: std::io::Result<std::process::ExitStatus> = status;
+                                            match status_result {
+                                                Ok(exit_status) => p.status = ProcessStatus::Finished(exit_status.code().unwrap_or(0)),
+                                                Err(e) => p.status = ProcessStatus::Failed(e.to_string()),
+                                            }
+                                        }
+                                        rx_wrapper = Some(rx); // put it back for next loop
+                                        if !auto_restart { break; }
+                                    }
                                 }
                             }
+                            None => {
+                                // Missing rx, shouldn't happen, but break if it does
+                                break;
+                            }
                         }
-                    }
+                    } // end loop
                 });
 
                 self.processes.lock().await.insert(id.clone(), process);

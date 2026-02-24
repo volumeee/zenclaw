@@ -164,7 +164,7 @@ impl WhatsAppChannel {
                         let session_key = format!("wa_{}", msg.from);
 
                         match agent
-                            .process(provider, memory, &msg.body, &session_key)
+                            .process(provider, memory, &msg.body, &session_key, None)
                             .await
                         {
                             Ok(response) => {

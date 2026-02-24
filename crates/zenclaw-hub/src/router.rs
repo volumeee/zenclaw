@@ -114,7 +114,7 @@ impl AgentRouter {
 
         let response = slot
             .agent
-            .process(provider, memory, message, session_key)
+            .process(provider, memory, message, session_key, None)
             .await?;
 
         Ok((slot.name.clone(), response))

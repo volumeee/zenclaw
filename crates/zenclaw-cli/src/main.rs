@@ -13,6 +13,7 @@ use colored::*;
 use tracing_subscriber::EnvFilter;
 
 use zenclaw_core::agent::{Agent, AgentConfig};
+use zenclaw_core::bus::EventBus;
 use zenclaw_core::config::ZenClawConfig;
 use zenclaw_core::memory::MemoryStore;
 use zenclaw_core::provider::ProviderConfig;
@@ -783,7 +784,33 @@ async fn run_chat(
         spinner.set_message("Thinking...");
         spinner.enable_steady_tick(std::time::Duration::from_millis(80));
 
-        match agent.process(&provider, &memory, input, session_key).await {
+        let bus = EventBus::new(32);
+        let mut rx = bus.subscribe_system();
+        let sp_clone = spinner.clone();
+
+        let _bg_task = tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                match event.event_type.as_str() {
+                    "agent_think" => {
+                        let it = event.data["iteration"].as_u64().unwrap_or(0);
+                        sp_clone.set_message(format!("🧠 Thinking... (iteration {})", it));
+                    }
+                    "tool_use" => {
+                        if let Some(tool) = event.data["tool"].as_str() {
+                            sp_clone.set_message(format!("🛠️ Using tool: {}", tool));
+                        }
+                    }
+                    "tool_result" => {
+                        if let Some(tool) = event.data["tool"].as_str() {
+                            sp_clone.set_message(format!("✅ Finished tool: {}", tool));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        match agent.process(&provider, &memory, input, session_key, Some(&bus)).await {
             Ok(response) => {
                 spinner.finish_and_clear();
                 println!("\n{} {}\n", "AI ›".cyan().bold(), response);
@@ -811,7 +838,7 @@ async fn run_ask(
     let memory = zenclaw_core::memory::InMemoryStore::new();
     let agent = build_agent(&model, None).await;
 
-    match agent.process(&provider, &memory, message, "oneshot").await {
+    match agent.process(&provider, &memory, message, "oneshot", None).await {
         Ok(response) => println!("{}", response),
         Err(e) => eprintln!("{}: {}", "Error".red(), e),
     }

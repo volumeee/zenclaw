@@ -57,6 +57,10 @@ impl Tool for ShellTool {
                 "working_dir": {
                     "type": "string",
                     "description": "Working directory (optional)"
+                },
+                "shell": {
+                    "type": "string",
+                    "description": "Custom shell to use (e.g., 'bash', 'zsh', 'fish', 'powershell'). If empty, uses system default."
                 }
             },
             "required": ["command"]
@@ -74,15 +78,29 @@ impl Tool for ShellTool {
             .map(|s| s.to_string())
             .or_else(|| self.working_dir.clone());
 
-        tracing::info!("Executing: {}", command);
+        let custom_shell = args["shell"].as_str().unwrap_or("");
+        
+        tracing::info!("Executing: {} (Shell: {})", command, if custom_shell.is_empty() { "default" } else { custom_shell });
 
         #[cfg(target_os = "windows")]
-        let (shell, arg) = ("cmd", "/C");
+        let (mut shell_bin, mut arg) = ("cmd".to_string(), "/C".to_string());
         #[cfg(not(target_os = "windows"))]
-        let (shell, arg) = ("sh", "-c");
+        let (mut shell_bin, mut arg) = ("sh".to_string(), "-c".to_string());
 
-        let mut cmd = Command::new(shell);
-        cmd.arg(arg)
+        if !custom_shell.is_empty() {
+            shell_bin = custom_shell.to_string();
+            // Assuming standard unix shells use -c, and powershell uses -Command
+            if shell_bin.to_lowercase().contains("powershell") || shell_bin.to_lowercase().contains("pwsh") {
+                arg = "-Command".to_string();
+            } else if shell_bin.to_lowercase().contains("cmd") {
+                arg = "/C".to_string();
+            } else {
+                arg = "-c".to_string();
+            }
+        }
+
+        let mut cmd = Command::new(&shell_bin);
+        cmd.arg(&arg)
             .arg(&command)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

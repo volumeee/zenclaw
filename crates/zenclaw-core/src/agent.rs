@@ -13,6 +13,7 @@ use crate::memory::MemoryStore;
 use crate::message::{ChatMessage, LlmResponse};
 use crate::provider::{ChatRequest, LlmProvider};
 use crate::tool::ToolRegistry;
+use crate::bus::{EventBus, SystemEvent};
 
 /// Configuration for the agent loop.
 #[derive(Debug, Clone)]
@@ -77,6 +78,7 @@ impl Agent {
         memory: &dyn MemoryStore,
         user_message: &str,
         session_key: &str,
+        bus: Option<&EventBus>,
     ) -> Result<String> {
         // 1. Load conversation history
         let history = memory.get_history(session_key, 50).await?;
@@ -109,6 +111,14 @@ impl Agent {
                 iterations,
                 self.config.max_iterations
             );
+
+            if let Some(b) = bus {
+                b.publish_system(SystemEvent {
+                    run_id: session_key.to_string(),
+                    event_type: "agent_think".into(),
+                    data: serde_json::json!({ "iteration": iterations }),
+                });
+            }
 
             // Call LLM
             let request = ChatRequest {
@@ -144,6 +154,14 @@ impl Agent {
 
                 // Execute each tool call
                 for call in &tool_calls {
+                    if let Some(b) = bus {
+                        b.publish_system(SystemEvent {
+                            run_id: session_key.to_string(),
+                            event_type: "tool_use".into(),
+                            data: serde_json::json!({ "tool": call.function.name, "args": call.function.arguments }),
+                        });
+                    }
+
                     let args: serde_json::Value =
                         serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
@@ -158,6 +176,14 @@ impl Agent {
                         &call.function.name,
                         &result,
                     ));
+
+                    if let Some(b) = bus {
+                        b.publish_system(SystemEvent {
+                            run_id: session_key.to_string(),
+                            event_type: "tool_result".into(),
+                            data: serde_json::json!({ "tool": call.function.name, "result_len": result.len() }),
+                        });
+                    }
                 }
 
                 // Continue loop — LLM will see tool results and decide next step

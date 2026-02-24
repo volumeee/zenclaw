@@ -169,6 +169,7 @@ impl TelegramChannel {
                                     memory.as_ref(),
                                     &text,
                                     &session_key,
+                                    None,
                                 ).await {
                                     Ok(response) => {
                                         info!("📤 [{}] Response: {} chars", chat_id, response.len());

@@ -135,7 +135,7 @@ async fn chat(
 
     match s
         .agent
-        .process(s.provider.as_ref(), s.memory.as_ref(), &req.message, &req.session)
+        .process(s.provider.as_ref(), s.memory.as_ref(), &req.message, &req.session, None)
         .await
     {
         Ok(response) => Ok(Json(ChatResponse {
