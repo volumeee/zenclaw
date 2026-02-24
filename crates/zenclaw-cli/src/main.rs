@@ -613,15 +613,16 @@ async fn main() -> anyhow::Result<()> {
                 let has_config = ZenClawConfig::default_path().exists();
                 let mut options = vec![
                     "1. 💬 Chat (Interactive)",
-                    "2. 🤖 Start Telegram Bot",
-                    "3. 🎮 Start Discord Bot",
-                    "4. 📱 Start WhatsApp Bot",
-                    "5. 🌐 Start REST API Server",
-                    "6. 📚 Manage Skills",
-                    "7. ⚙️  Settings",
-                    "8. 🔄 Check for Updates",
-                    "9. 🐛 View Live Logs",
-                    "10. ❌ Exit",
+                    "2. 🔄 Switch AI Model",
+                    "3. 🤖 Start Telegram Bot",
+                    "4. 🎮 Start Discord Bot",
+                    "5. 📱 Start WhatsApp Bot",
+                    "6. 🌐 Start REST API Server",
+                    "7. 📚 Manage Skills",
+                    "8. ⚙️  Settings",
+                    "9. 🔄 Check for Updates",
+                    "10. 🐛 View Live Logs",
+                    "11. ❌ Exit",
                 ];
 
                 if !has_config {
@@ -641,6 +642,9 @@ async fn main() -> anyhow::Result<()> {
                     setup::run_setup()
                 } else if choice.contains("💬 Chat") {
                     run_chat(None, None, None, None, vec![]).await
+                } else if choice.contains("Switch AI Model") {
+                    let _ = setup::run_model_switcher();
+                    Ok(())
                 } else if choice.contains("Telegram") {
                     run_telegram(None, None, None, None, None).await
                 } else if choice.contains("Discord") {
@@ -718,7 +722,7 @@ async fn run_chat(
         if prompt.is_empty() { None } else { Some(prompt) }
     };
 
-    let (agent, provider, memory, provider_name, model) = setup_bot_env(
+    let (mut agent, mut provider, memory, mut provider_name, mut model) = setup_bot_env(
         provider_name,
         model,
         api_key,
@@ -795,6 +799,14 @@ async fn run_chat(
             "/model" => {
                 println!("  {} {}", "Provider:".dimmed(), provider_name.green());
                 println!("  {} {}", "Model:".dimmed(), model.green());
+                
+                if let Ok(Some((p, m, k, b))) = setup::run_model_switcher() {
+                    provider_name = p.clone();
+                    model = m.clone();
+                    agent.config.model = Some(m.clone());
+                    provider = create_provider(&p, k.as_deref().unwrap_or(""), &m, b.as_deref());
+                }
+                
                 continue;
             }
             "/skills" => {

@@ -447,3 +447,106 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("zenclaw")
 }
+
+/// Run an interactive model switcher and return the selected provider configurations if completing smoothly.
+#[allow(clippy::type_complexity)]
+pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<String>, Option<String>)>> {
+    let theme = ColorfulTheme::default();
+    let mut config = load_saved_config().unwrap_or_default();
+
+    println!();
+    let provider_names: Vec<String> = PROVIDERS.iter().map(|p| p.display.to_string()).chain(vec!["❌ Cancel".to_string()]).collect();
+    
+    let provider_idx = Select::with_theme(&theme)
+        .with_prompt("Select a Provider")
+        .items(&provider_names)
+        .default(0)
+        .interact_opt()?;
+
+    let provider_idx = match provider_idx {
+        Some(idx) if idx < PROVIDERS.len() => idx,
+        _ => {
+            println!("  {}", "Cancelled.".yellow());
+            return Ok(None);
+        }
+    };
+
+    let provider = &PROVIDERS[provider_idx];
+
+    let mut model_names: Vec<String> = provider.models.iter().map(|m| m.to_string()).collect();
+    model_names.push("❌ Cancel".to_string());
+
+    let model_idx = Select::with_theme(&theme)
+        .with_prompt(format!("Select {} model", provider.name.green()))
+        .items(&model_names)
+        .default(0)
+        .interact_opt()?;
+        
+    let model_idx = match model_idx {
+        Some(idx) if idx < provider.models.len() => idx,
+        _ => {
+            println!("  {}", "Cancelled.".yellow());
+            return Ok(None);
+        }
+    };
+    
+    let model = provider.models[model_idx];
+
+    // Check API Key
+    let final_api_key = if provider.needs_key {
+        let has_saved = config.provider.provider == provider.name && config.provider.api_key.is_some();
+        let has_env = std::env::var(provider.env_var).is_ok();
+        
+        if has_saved {
+            config.provider.api_key.clone()
+        } else if has_env {
+            Some(std::env::var(provider.env_var).unwrap())
+        } else {
+            println!();
+            println!("  ⚠️  No API key found for {}.", provider.display.green());
+            println!("  {}", format!("Get one at: {}", 
+                     match provider.name {
+                        "openai" => "https://platform.openai.com/api-keys",
+                        "gemini" => "https://aistudio.google.com/apikey",
+                        "groq" => "https://console.groq.com/keys",
+                        "openrouter" => "https://openrouter.ai/keys",
+                        _ => "your provider's website",
+                     }).dimmed());
+            println!();
+            
+            let key: String = Password::with_theme(&theme)
+                .with_prompt("  Enter API Key")
+                .interact()?;
+            
+            if key.trim().is_empty() {
+                println!("  {}", "❌ Setup cancelled. Key is required.".red());
+                return Ok(None);
+            }
+            Some(key.trim().to_string())
+        }
+    } else {
+        None
+    };
+
+    // Save configuration
+    config.provider = ProviderConfig {
+        provider: provider.name.to_string(),
+        model: model.to_string(),
+        api_key: final_api_key.clone(),
+        api_base: provider.api_base.map(|s| s.to_string()),
+        ..Default::default()
+    };
+
+    let config_path = ZenClawConfig::default_path();
+    config.save(&config_path)?;
+    
+    println!();
+    println!("  ✅ Switched to {} ({})", model.cyan().bold(), provider.name.green());
+    
+    Ok(Some((
+        provider.name.to_string(), 
+        model.to_string(), 
+        final_api_key, 
+        provider.api_base.map(|s| s.to_string())
+    )))
+}
