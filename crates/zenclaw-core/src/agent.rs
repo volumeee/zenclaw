@@ -89,8 +89,33 @@ impl Agent {
         // System prompt
         messages.push(ChatMessage::system(&self.config.system_prompt));
 
-        // Conversation history
-        messages.extend(history);
+        // Token Summarization Strategy (Context Window Control)
+        // Keep calculating total string length to approximate tokens
+        let mut history_to_keep = Vec::new();
+        let mut history_len = 0;
+        let max_history_chars = 30_000; // Roughly ~7500 tokens before it gets too huge
+
+        for msg in history.into_iter().rev() { // Start from newest
+            let content_len = msg.content.as_deref().unwrap_or("").len();
+            if history_len + content_len > max_history_chars {
+                if let Some(b) = bus {
+                    b.publish_system(crate::bus::SystemEvent {
+                        run_id: session_key.to_string(),
+                        event_type: "memory_truncate".into(),
+                        data: serde_json::json!({ "kept_chars": history_len }),
+                    });
+                }
+                history_to_keep.push(ChatMessage::system(
+                    "[System Note: Older conversation history has been truncated automatically to prevent memory overflow.]",
+                ));
+                break;
+            }
+            history_len += content_len;
+            history_to_keep.push(msg);
+        }
+        
+        history_to_keep.reverse();
+        messages.extend(history_to_keep);
 
         // Current user message
         messages.push(ChatMessage::user(user_message));
@@ -186,9 +211,30 @@ impl Agent {
                         serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
                     let fut = async move {
-                        let result = match self.tools.execute(&call.function.name, args).await {
-                            Ok(r) => r,
-                            Err(e) => format!("Error: {}", e),
+                        // Anti-Freeze Execution (Hard Timeout)
+                        let timeout_duration = std::time::Duration::from_secs(60);
+                        let execution = tokio::time::timeout(
+                            timeout_duration,
+                            self.tools.execute(&call.function.name, args),
+                        );
+
+                        let result = match execution.await {
+                            Ok(Ok(r)) => r,
+                            Ok(Err(e)) => format!("Error: {}", e),
+                            Err(_) => {
+                                let timeout_err_msg = format!(
+                                    "Error: Tool execution timed out after {} seconds. The task might be hanging or taking too long. Please try a different approach, refine your parameters, or break the task into smaller chunks.",
+                                    timeout_duration.as_secs()
+                                );
+                                if let Some(b) = bus {
+                                    b.publish_system(crate::bus::SystemEvent {
+                                        run_id: session_key.to_string(),
+                                        event_type: "tool_timeout".into(),
+                                        data: serde_json::json!({ "tool": &call.function.name }),
+                                    });
+                                }
+                                timeout_err_msg
+                            }
                         };
                         (call, result)
                     };

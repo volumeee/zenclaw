@@ -191,12 +191,43 @@ impl TelegramChannel {
                                                 }
                                                 "tool_use" => {
                                                     if let Some(tool) = event.data["tool"].as_str() {
-                                                        new_status = format!("🛠️ *Using tool:* `{}`", tool);
+                                                        // Extract useful target from args if possible to make UX less abstract
+                                                        let mut target = String::new();
+                                                        let json_args_opt = event.data["args"].as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+                                                        if let Some(json_args) = json_args_opt {
+                                                            if let Some(url) = json_args["url"].as_str() {
+                                                                target = format!(" ({})", url);
+                                                            } else if let Some(path) = json_args["path"].as_str() {
+                                                                target = format!(" ({})", path);
+                                                            } else if let Some(query) = json_args["query"].as_str() {
+                                                                target = format!(" ({})", query);
+                                                            } else if let Some(cmd) = json_args["command"].as_str() {
+                                                                target = format!(" ({})", cmd);
+                                                            }
+                                                        }
+                                                        
+                                                        // Simplify tool names for humans
+                                                        let human_tool = match tool {
+                                                            "web_scrape" | "web_fetch" => "Reading Page",
+                                                            "web_search" => "Searching Web",
+                                                            "shell" => "Running Command",
+                                                            "read_file" | "list_dir" => "Checking File",
+                                                            "write_file" | "edit_file" => "Modifying Code",
+                                                            _ => tool,
+                                                        };
+
+                                                        new_status = format!("🛠️ *{}*`{}`", human_tool, target);
                                                     }
                                                 }
                                                 "tool_result" => {
+                                                    new_status = "✅ *Analysis Complete. Thinking...*".to_string();
+                                                }
+                                                "memory_truncate" => {
+                                                    new_status = "🧹 *Summarizing old memories...*".to_string();
+                                                }
+                                                "tool_timeout" => {
                                                     if let Some(tool) = event.data["tool"].as_str() {
-                                                        new_status = format!("✅ *Finished tool:* `{}`", tool);
+                                                        new_status = format!("⚠️ *Tool timeout:* `{}`", tool);
                                                     }
                                                 }
                                                 _ => {}

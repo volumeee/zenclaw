@@ -797,12 +797,40 @@ async fn run_chat(
                     }
                     "tool_use" => {
                         if let Some(tool) = event.data["tool"].as_str() {
-                            sp_clone.set_message(format!("🛠️ Using tool: {}", tool));
+                            let mut target = String::new();
+                            let json_args_opt = event.data["args"].as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+                            if let Some(json_args) = json_args_opt {
+                                if let Some(url) = json_args["url"].as_str() {
+                                    target = format!(" ({})", url);
+                                } else if let Some(path) = json_args["path"].as_str() {
+                                    target = format!(" ({})", path);
+                                } else if let Some(query) = json_args["query"].as_str() {
+                                    target = format!(" ({})", query);
+                                } else if let Some(cmd) = json_args["command"].as_str() {
+                                    target = format!(" ({})", cmd);
+                                }
+                            }
+                            
+                            let human_tool = match tool {
+                                "web_scrape" | "web_fetch" => "Reading Page",
+                                "web_search" => "Searching Web",
+                                "shell" => "Running Command",
+                                "read_file" | "list_dir" => "Checking File",
+                                "write_file" | "edit_file" => "Modifying Code",
+                                _ => tool,
+                            };
+                            sp_clone.set_message(format!("🛠️ {}{}", human_tool, target));
                         }
                     }
                     "tool_result" => {
+                        sp_clone.set_message("✅ Analysis Complete. Thinking...".to_string());
+                    }
+                    "memory_truncate" => {
+                        sp_clone.set_message("🧹 Summarizing old memories...".to_string());
+                    }
+                    "tool_timeout" => {
                         if let Some(tool) = event.data["tool"].as_str() {
-                            sp_clone.set_message(format!("✅ Finished tool: {}", tool));
+                            sp_clone.set_message(format!("⚠️ Tool timeout: {}", tool));
                         }
                     }
                     _ => {}
