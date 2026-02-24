@@ -10,70 +10,80 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Fast check: always runs on every push ─────────────────────────────────
   check:
-    name: Check & Test
+    name: Check & Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
-      - run: cargo test --workspace
       - run: cargo clippy --workspace -- -D warnings
 
-  build:
-    name: Build (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            name: zenclaw-linux-x86_64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            name: zenclaw-linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: zenclaw-macos-x86_64
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            name: zenclaw-macos-aarch64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            name: zenclaw-windows-x86_64
+  # ── Test: always runs on every push ───────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
 
-      # Install cross-compilation tools for aarch64
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+  # ── Auto-tag: only runs when Cargo.toml version changes on main ──────────
+  auto-tag:
+    name: Auto Tag on Version Bump
+    runs-on: ubuntu-latest
+    # Only run on direct push to main (not PRs)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    outputs:
+      version_changed: ${{ steps.check_version.outputs.changed }}
+      new_version: ${{ steps.check_version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2 # Need parent commit to diff against
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Package
+      - name: Check if version changed in Cargo.toml
+        id: check_version
         shell: bash
         run: |
-          mkdir -p dist
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/zenclaw.exe dist/${{ matrix.name }}.exe
+          # Read current version from workspace Cargo.toml
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Current version: $CURRENT"
+
+          # Read version from parent commit
+          PREV=$(git show HEAD~1:Cargo.toml 2>/dev/null | grep '^version' | head -1 | sed 's/version = "\(.*\)"/\1/' || echo "")
+          echo "Previous version: $PREV"
+
+          if [ "$CURRENT" != "$PREV" ] && [ -n "$CURRENT" ]; then
+            echo "Version changed: $PREV → $CURRENT"
+            echo "changed=true"  >> "$GITHUB_OUTPUT"
+            echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
           else
-            cp target/${{ matrix.target }}/release/zenclaw dist/${{ matrix.name }}
-            chmod +x dist/${{ matrix.name }}
+            echo "Version unchanged — skipping release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.name }}
-          path: dist/*
+      - name: Create and push annotated tag
+        if: steps.check_version.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          VERSION="v${{ steps.check_version.outputs.version }}"
+          echo "Creating tag $VERSION ..."
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Delete remote tag if it already exists (safe force-push equivalent)
+          git push origin :refs/tags/$VERSION 2>/dev/null || true
+
+          git tag -a "$VERSION" -m "Release $VERSION (auto-tagged by CI on version bump)"
+          git push origin "$VERSION"
+          echo "✅ Tag $VERSION pushed — release workflow will now start."

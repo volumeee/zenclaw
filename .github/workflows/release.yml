@@ -1,5 +1,7 @@
 name: Release
 
+# Triggered automatically when CI pushes a vX.Y.Z tag after version bump.
+# You can also trigger manually by pushing a tag: git tag v1.2.3 && git push origin v1.2.3
 on:
   push:
     tags:
@@ -12,73 +14,100 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ── Create the GitHub Release entry first ─────────────────────────────────
   create_release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: "ZenClaw ${{ steps.version.outputs.version }}"
           generate_release_notes: true
-          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
 
-  release:
-    name: Release (${{ matrix.target }})
+  # ── Build binaries for all platforms ──────────────────────────────────────
+  build-and-upload:
+    name: Build & Upload (${{ matrix.name }})
     needs: create_release
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             name: zenclaw-linux-x86_64
+
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             name: zenclaw-linux-aarch64
+            cross: true
+
           - target: x86_64-apple-darwin
             os: macos-latest
             name: zenclaw-macos-x86_64
+
           - target: aarch64-apple-darwin
             os: macos-latest
             name: zenclaw-macos-aarch64
+
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             name: zenclaw-windows-x86_64
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
 
-      - name: Install cross-compilation tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ARM64 cross-compilation on Linux
+      - name: Install cross-compilation tools (aarch64)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"'   >> ~/.cargo/config.toml
 
-      - name: Build
+      - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package (Unix)
+        if: matrix.os != 'windows-latest'
         shell: bash
         run: |
           mkdir -p dist
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/zenclaw.exe dist/${{ matrix.name }}.exe
-            cd dist
-            # Windows gets a ZIP instead of tar.gz
-            7z a ${{ matrix.name }}.zip ${{ matrix.name }}.exe
-          else
-            cp target/${{ matrix.target }}/release/zenclaw dist/${{ matrix.name }}
-            chmod +x dist/${{ matrix.name }}
-            cd dist
-            tar -czf ${{ matrix.name }}.tar.gz ${{ matrix.name }}
-          fi
+          cp target/${{ matrix.target }}/release/zenclaw dist/${{ matrix.name }}
+          chmod +x dist/${{ matrix.name }}
+          tar -czf dist/${{ matrix.name }}.tar.gz -C dist ${{ matrix.name }}
+          # Print binary size for reference
+          ls -lh dist/${{ matrix.name }}
 
-      - name: Upload to Release
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/zenclaw.exe dist/${{ matrix.name }}.exe
+          cd dist
+          7z a ${{ matrix.name }}.zip ${{ matrix.name }}.exe
+
+      - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
