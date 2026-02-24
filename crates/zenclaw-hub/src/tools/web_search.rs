@@ -414,68 +414,163 @@ impl WebSearchTool {
         parse_ddg_lite(&html, max)
     }
 
-    /// Wikipedia Search API — free, JSON, no block, great for factual queries.
+    /// Wikipedia Search API — searches both id and en Wikipedia, merges results.
     async fn wikipedia_search(&self, query: &str, max: usize, lang: &str) -> Vec<SearchResult> {
-        let wiki_lang = match lang {
-            "id" => "id",  // Indonesian Wikipedia
-            _ => "en",     // English Wikipedia
+        // Auto-detect Indonesian from query words
+        let is_indonesian = matches!(lang, "id") || detect_indonesian(query);
+        let wiki_langs: &[&str] = if is_indonesian {
+            &["id", "en"]  // Indonesian query: search id first, then en with translated terms
+        } else {
+            &["en"]
         };
 
-        let url = format!(
-            "https://{}.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&srlimit={}&format=json&utf8=1&srprop=snippet|titlesnippet",
-            wiki_lang,
-            percent_encode(query),
-            max
-        );
+        let mut results = Vec::new();
+        for &wl in wiki_langs {
+            // For English Wikipedia with Indonesian query, use key nouns only
+            let search_query = if wl == "en" && is_indonesian {
+                indonesian_to_english_hint(query)
+            } else {
+                query.to_string()
+            };
 
-        let resp = self
-            .client
-            .get(&url)
-            .header("Accept", "application/json")
-            .send()
-            .await;
+            let url = format!(
+                "https://{}.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&srlimit={}&format=json&utf8=1&srprop=snippet|titlesnippet",
+                wl,
+                percent_encode(&search_query),
+                max
+            );
 
-        let text = match resp {
-            Ok(r) => r.text().await.unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!("Wikipedia API failed: {}", e);
-                return vec![];
-            }
-        };
+            let resp = self
+                .client
+                .get(&url)
+                .header("Accept", "application/json")
+                .send()
+                .await;
 
-        // Parse Wikipedia JSON response
-        let v: Value = match serde_json::from_str(&text) {
-            Ok(v) => v,
-            Err(_) => return vec![],
-        };
+            let text = match resp {
+                Ok(r) => r.text().await.unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!("Wikipedia {} API failed: {}", wl, e);
+                    continue;
+                }
+            };
 
-        let items = match v["query"]["search"].as_array() {
-            Some(a) => a,
-            None => return vec![],
-        };
+            let v: Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
 
-        items
-            .iter()
-            .take(max)
-            .filter_map(|item| {
-                let title = item["title"].as_str()?.to_string();
+            let items = match v["query"]["search"].as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+
+            for item in items.iter().take(max) {
+                let Some(title) = item["title"].as_str() else { continue };
                 let snippet = item["snippet"].as_str()
                     .map(strip_html_tags)
                     .unwrap_or_default();
-                let page_id = item["pageid"].as_u64()?;
-                let url = format!(
-                    "https://{}.wikipedia.org/?curid={}",
-                    wiki_lang, page_id
-                );
-                Some(SearchResult { title, url, snippet })
-            })
-            .collect()
+                let Some(page_id) = item["pageid"].as_u64() else { continue };
+
+                // Score relevance: skip articles where title is clearly unrelated
+                // (e.g. searching president, getting "protests" article)
+                let title_lower = title.to_lowercase();
+                let query_lower = query.to_lowercase();
+                let skip_keywords = ["protest", "demonstration", "riot", "election fraud",
+                    "protes", "demonstrasi", "huru-hara", "kerusuhan"];
+                let is_irrelevant = skip_keywords.iter().any(|kw| title_lower.contains(kw))
+                    && !query_lower.contains("protest")
+                    && !query_lower.contains("protes");
+
+                if is_irrelevant {
+                    tracing::debug!("web_search: skipping irrelevant Wikipedia hit: {}", title);
+                    continue;
+                }
+
+                let url = format!("https://{}.wikipedia.org/?curid={}", wl, page_id);
+                results.push(SearchResult {
+                    title: title.to_string(),
+                    url,
+                    snippet,
+                });
+
+                if results.len() >= max { break; }
+            }
+
+            if results.len() >= max { break; }
+        }
+
+        results
     }
 }
 
+
+
 // ─────────────────────────────────────────────────────────────────────────────
-// HTML parsers
+// Language helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Detect if a query is predominantly Indonesian based on common Indonesian words.
+fn detect_indonesian(query: &str) -> bool {
+    const ID_WORDS: &[&str] = &[
+        "siapa", "apa", "kapan", "dimana", "di mana", "berapa", "mengapa",
+        "bagaimana", "sekarang", "adalah", "dengan", "untuk", "yang", "dan",
+        "atau", "tidak", "bisa", "akan", "sudah", "belum", "baru", "lagi",
+        "presiden", "menteri", "gubernur", "bupati", "indonesia", "jakarta",
+        "pemerintah", "negara", "rakyat", "bangsa", "tahun", "bulan",
+        "saat", "ini", "itu", "dari", "ke", "di", "pada",
+    ];
+    let q = query.to_lowercase();
+    let words: Vec<&str> = q.split_whitespace().collect();
+    let id_count = words.iter()
+        .filter(|w| ID_WORDS.contains(w))
+        .count();
+    // If ≥1 Indonesian word found, treat as Indonesian query
+    id_count >= 1
+}
+
+/// Convert an Indonesian query to key English nouns for English Wikipedia search.
+/// This is a simple keyword extraction — not a full translation.
+fn indonesian_to_english_hint(query: &str) -> String {
+    let q = query.to_lowercase();
+    // Simple word-to-word substitution for common query patterns
+    let substitutions: &[(&str, &str)] = &[
+        ("presiden", "president"),
+        ("perdana menteri", "prime minister"),
+        ("menteri", "minister"),
+        ("gubernur", "governor"),
+        ("walikota", "mayor"),
+        ("bupati", "regent"),
+        ("indonesia", "Indonesia"),
+        ("ekonomi", "economy"),
+        ("politik", "politics"),
+        ("sejarah", "history"),
+        ("perang", "war"),
+        ("ibu kota", "capital city"),
+        ("penduduk", "population"),
+        ("kota", "city"),
+        ("provinsi", "province"),
+        ("pulau", "island"),
+        ("sungai", "river"),
+        ("gunung", "mountain"),
+    ];
+
+    let mut result = q.clone();
+    for (id_word, en_word) in substitutions {
+        result = result.replace(id_word, en_word);
+    }
+
+    // Strip remaining common Indonesian stop words that confuse English Wikipedia
+    let stop_words = ["siapa", "apa", "adalah", "sekarang", "saat", "ini",
+        "itu", "yang", "dengan", "untuk", "dari", "ke", "di", "pada",
+        "berapa", "kapan", "dimana", "bagaimana", "mengapa"];
+    let cleaned: Vec<&str> = result.split_whitespace()
+        .filter(|w| !stop_words.contains(w))
+        .collect();
+
+    cleaned.join(" ")
+}
+
 
 /// A single search result.
 struct SearchResult {
