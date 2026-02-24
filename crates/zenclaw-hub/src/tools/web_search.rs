@@ -1,7 +1,7 @@
 //! Web search tool — search the internet via DuckDuckGo HTML.
 //!
 //! Uses DDG's HTML-only endpoint — no API key, no JavaScript needed.
-//! Perfect for embedded/edge devices.
+//! Falls back to DDG Lite if main endpoint is blocked.
 
 use async_trait::async_trait;
 use reqwest::Client;
@@ -9,6 +9,10 @@ use serde_json::{json, Value};
 
 use zenclaw_core::error::Result;
 use zenclaw_core::tool::Tool;
+
+// Realistic browser User-Agent — bot UAs get blocked/captcha'd by DDG
+const USER_AGENT: &str =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 /// Web search tool using DuckDuckGo HTML.
 pub struct WebSearchTool {
@@ -18,11 +22,14 @@ pub struct WebSearchTool {
 
 impl WebSearchTool {
     pub fn new() -> Self {
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .user_agent(USER_AGENT)
+            .build()
+            .unwrap_or_default();
+
         Self {
-            client: Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_default(),
+            client,
             max_results: 8,
         }
     }
@@ -41,7 +48,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the internet using DuckDuckGo. Returns titles, URLs, and snippets."
+        "Search the internet using DuckDuckGo. Returns titles, URLs, and snippets for the query."
     }
 
     fn parameters(&self) -> Value {
@@ -54,7 +61,7 @@ impl Tool for WebSearchTool {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results (default: 8)"
+                    "description": "Maximum number of results (default: 8, max: 15)"
                 }
             },
             "required": ["query"]
@@ -62,10 +69,11 @@ impl Tool for WebSearchTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let query = args["query"].as_str().unwrap_or("");
+        let query = args["query"].as_str().unwrap_or("").trim();
         let max_results = args["max_results"]
             .as_u64()
-            .unwrap_or(self.max_results as u64) as usize;
+            .map(|n| n.min(15) as usize)
+            .unwrap_or(self.max_results);
 
         if query.is_empty() {
             return Ok("Error: query is required".to_string());
@@ -73,48 +81,115 @@ impl Tool for WebSearchTool {
 
         tracing::info!("Searching: {}", query);
 
-        // Use DuckDuckGo HTML search
-        let url = "https://html.duckduckgo.com/html/";
+        // Try DDG HTML endpoint first
+        if let Some(results) = self.try_ddg_html(query, max_results).await {
+            if !results.is_empty() {
+                return Ok(format_results(query, &results));
+            }
+        }
+
+        // Fallback: DDG Lite (simpler HTML, harder to block)
+        if let Some(results) = self.try_ddg_lite(query, max_results).await {
+            if !results.is_empty() {
+                return Ok(format_results(query, &results));
+            }
+        }
+
+        // Both failed — return a helpful message instead of empty/confusing output
+        Ok(format!(
+            "⚠️ Search for \"{}\" returned no results.\n\
+            DuckDuckGo may be rate-limiting this device. Try:\n\
+            • Use the `web_fetch` tool with a direct URL\n\
+            • Use the `web_scrape` tool on a known page\n\
+            • Try rephrasing the query",
+            query
+        ))
+    }
+}
+
+impl WebSearchTool {
+    /// Try the main DuckDuckGo HTML endpoint.
+    async fn try_ddg_html(&self, query: &str, max_results: usize) -> Option<Vec<SearchResult>> {
         let resp = self
             .client
-            .post(url)
-            .form(&[("q", query)])
-            .header("User-Agent", "ZenClaw/0.1 (AI Agent)")
+            .post("https://html.duckduckgo.com/html/")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header("Accept-Language", "en-US,en;q=0.5")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Referer", "https://duckduckgo.com/")
+            .form(&[("q", query), ("b", ""), ("kl", "wt-wt")])
             .send()
-            .await;
+            .await
+            .ok()?;
 
-        match resp {
-            Ok(response) => {
-                let html = response.text().await.unwrap_or_default();
-                let results = parse_ddg_html(&html, max_results);
+        let status = resp.status().as_u16();
+        let html = resp.text().await.unwrap_or_default();
 
-                if results.is_empty() {
-                    return Ok(format!("No results found for: {}", query));
-                }
+        tracing::debug!(
+            "DDG HTML response: {} status, {} bytes",
+            status,
+            html.len()
+        );
 
-                let formatted = results
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| {
-                        format!(
-                            "{}. **{}**\n   {}\n   {}\n",
-                            i + 1,
-                            r.title,
-                            r.url,
-                            r.snippet
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                Ok(format!(
-                    "Search results for: \"{}\"\n\n{}",
-                    query, formatted
-                ))
-            }
-            Err(e) => Ok(format!("Search error: {}", e)),
+        // If we got a suspiciously small response, it's likely a block/redirect
+        if html.len() < 500 {
+            tracing::warn!("DDG HTML returned tiny response ({} bytes) — likely blocked", html.len());
+            return Some(vec![]);
         }
+
+        Some(parse_ddg_html(&html, max_results))
     }
+
+    /// Try the DDG Lite endpoint (simpler HTML, fallback).
+    async fn try_ddg_lite(&self, query: &str, max_results: usize) -> Option<Vec<SearchResult>> {
+        let encoded = percent_encode(query);
+        let url = format!("https://lite.duckduckgo.com/lite/?q={}", encoded);
+
+        let resp = self
+            .client
+            .get(&url)
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("Accept-Language", "en-US,en;q=0.5")
+            .send()
+            .await
+            .ok()?;
+
+        let html = resp.text().await.unwrap_or_default();
+
+        tracing::debug!("DDG Lite response: {} bytes", html.len());
+
+        if html.len() < 200 {
+            return Some(vec![]);
+        }
+
+        Some(parse_ddg_lite(&html, max_results))
+    }
+}
+
+/// Format results into text for the LLM.
+fn format_results(query: &str, results: &[SearchResult]) -> String {
+    if results.is_empty() {
+        return format!("No results found for: \"{}\"", query);
+    }
+
+    let formatted: Vec<String> = results
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let snippet = if r.snippet.is_empty() {
+                String::new()
+            } else {
+                format!("\n   {}", r.snippet)
+            };
+            format!("{}. **{}**\n   {}{}", i + 1, r.title, r.url, snippet)
+        })
+        .collect();
+
+    format!(
+        "Search results for: \"{}\"\n\n{}\n",
+        query,
+        formatted.join("\n\n")
+    )
 }
 
 /// A single search result.
@@ -125,27 +200,23 @@ struct SearchResult {
 }
 
 /// Parse DuckDuckGo HTML search results.
-/// Simple HTML parsing without heavy dependencies.
 fn parse_ddg_html(html: &str, max_results: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
-
-    // DDG results are in <a class="result__a" href="...">title</a>
-    // and <a class="result__snippet" ...>snippet</a>
     let mut pos = 0;
 
     while results.len() < max_results {
-        // Find next result link
+        // DDG main: <a class="result__a" href="...">title</a>
         let link_marker = "class=\"result__a\"";
         let link_start = match html[pos..].find(link_marker) {
             Some(p) => pos + p,
             None => break,
         };
 
-        // Extract href
-        let url = extract_href(&html[link_start.saturating_sub(200)..link_start + 50])
-            .unwrap_or_default();
+        // Extract href — look back up to 300 chars for the href attribute
+        let search_start = link_start.saturating_sub(300);
+        let url = extract_href(&html[search_start..link_start + 50]).unwrap_or_default();
 
-        // Extract title (content between > and </a>)
+        // Extract title
         let title_start = match html[link_start..].find('>') {
             Some(p) => link_start + p + 1,
             None => { pos = link_start + 20; continue; }
@@ -156,33 +227,87 @@ fn parse_ddg_html(html: &str, max_results: usize) -> Vec<SearchResult> {
         };
         let title = strip_html_tags(&html[title_start..title_end]);
 
-        // Find snippet
+        // Find snippet after the title
         let snippet_marker = "class=\"result__snippet\"";
         let snippet = if let Some(sp) = html[title_end..].find(snippet_marker) {
-            let sp_start = title_end + sp;
-            let content_start = html[sp_start..].find('>').map(|p| sp_start + p + 1);
-            let content_end = content_start.and_then(|cs| html[cs..].find("</").map(|p| cs + p));
-
-            match (content_start, content_end) {
-                (Some(cs), Some(ce)) => strip_html_tags(&html[cs..ce]),
+            let sp_abs = title_end + sp;
+            let cs = html[sp_abs..].find('>').map(|p| sp_abs + p + 1);
+            let ce = cs.and_then(|c| {
+                // Snippet ends at next opening tag or </
+                html[c..].find("</").map(|p| c + p)
+            });
+            match (cs, ce) {
+                (Some(c), Some(e)) if e > c => strip_html_tags(&html[c..e]),
                 _ => String::new(),
             }
         } else {
             String::new()
         };
 
-        // Clean URL — DuckDuckGo wraps URLs in redirects
         let clean_url = clean_ddg_url(&url);
 
         if !title.is_empty() && !clean_url.is_empty() {
+            results.push(SearchResult { title, url: clean_url, snippet });
+        }
+
+        pos = title_end + 5;
+    }
+
+    results
+}
+
+/// Parse DuckDuckGo Lite results (simpler table-based HTML).
+fn parse_ddg_lite(html: &str, max_results: usize) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+    let mut pos = 0;
+
+    while results.len() < max_results {
+        // DDG Lite uses <a class="result-link" href="...">title</a>
+        let link_marker = "class=\"result-link\"";
+        let link_start = match html[pos..].find(link_marker) {
+            Some(p) => pos + p,
+            None => break,
+        };
+
+        let search_start = link_start.saturating_sub(200);
+        let url = match extract_href(&html[search_start..link_start + 50]) {
+            Some(u) if !u.is_empty() => u,
+            _ => { pos = link_start + 20; continue; }
+        };
+
+        let title_start = match html[link_start..].find('>') {
+            Some(p) => link_start + p + 1,
+            None => { pos = link_start + 20; continue; }
+        };
+        let title_end = match html[title_start..].find("</a>") {
+            Some(p) => title_start + p,
+            None => { pos = title_start; continue; }
+        };
+        let title = strip_html_tags(&html[title_start..title_end]);
+
+        // Snippet in DDG Lite: <td class="result-snippet">...</td>
+        let snippet_marker = "class=\"result-snippet\"";
+        let snippet = if let Some(sp) = html[title_end..].find(snippet_marker) {
+            let sp_abs = title_end + sp;
+            let cs = html[sp_abs..].find('>').map(|p| sp_abs + p + 1);
+            let ce = cs.and_then(|c| html[c..].find("</").map(|p| c + p));
+            match (cs, ce) {
+                (Some(c), Some(e)) if e > c => strip_html_tags(&html[c..e]),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        if !title.is_empty() {
             results.push(SearchResult {
                 title,
-                url: clean_url,
+                url,
                 snippet,
             });
         }
 
-        pos = title_end + 10;
+        pos = title_end + 5;
     }
 
     results
@@ -195,7 +320,7 @@ fn extract_href(html: &str) -> Option<String> {
     Some(html[href_start..href_end].to_string())
 }
 
-/// Strip HTML tags from text.
+/// Strip HTML tags and decode common entities.
 fn strip_html_tags(html: &str) -> String {
     let mut result = String::new();
     let mut in_tag = false;
@@ -209,7 +334,6 @@ fn strip_html_tags(html: &str) -> String {
         }
     }
 
-    // Decode common HTML entities
     result
         .replace("&amp;", "&")
         .replace("&lt;", "<")
@@ -217,32 +341,50 @@ fn strip_html_tags(html: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#x27;", "'")
         .replace("&nbsp;", " ")
-        .trim()
-        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Clean DuckDuckGo redirect URL to get the actual URL.
 fn clean_ddg_url(url: &str) -> String {
-    // DDG wraps URLs like: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com...
-    if url.contains("uddg=")
-        && let Some(start) = url.find("uddg=")
-    {
+    // DDG wraps URLs like: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&...
+    if let Some(start) = url.find("uddg=") {
         let encoded = &url[start + 5..];
         let end = encoded.find('&').unwrap_or(encoded.len());
-        let encoded_url = &encoded[..end];
-        // URL decode
-        return url_decode(encoded_url);
+        return url_decode(&encoded[..end]);
     }
 
-    // Also handle direct URLs
     if url.starts_with("http") {
         return url.to_string();
+    }
+
+    // Handle protocol-relative URLs
+    if url.starts_with("//") {
+        return format!("https:{}", url);
     }
 
     url.to_string()
 }
 
-/// Simple percent-decoding.
+/// Simple percent-encoding for query strings.
+fn percent_encode(s: &str) -> String {
+    let mut result = String::new();
+    for ch in s.chars() {
+        match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => result.push(ch),
+            ' ' => result.push('+'),
+            _ => {
+                for byte in ch.to_string().as_bytes() {
+                    result.push_str(&format!("%{:02X}", byte));
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Simple percent-decoding for DDG redirect URLs.
 fn url_decode(input: &str) -> String {
     let mut result = String::new();
     let mut chars = input.chars().peekable();
