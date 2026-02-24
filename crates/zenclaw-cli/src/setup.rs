@@ -217,17 +217,26 @@ pub fn run_setup() -> anyhow::Result<()> {
     println!();
     println!("  {} {}", "Selected:".dimmed(), model.green());
 
-    // Build and save config
-    let config = ZenClawConfig {
-        provider: ProviderConfig {
-            provider: provider.name.to_string(),
-            model: model.to_string(),
-            api_key: api_key.clone(),
-            api_base: provider.api_base.map(|s| s.to_string()),
-            ..Default::default()
-        },
+    // Load existing config so we don't wipe out other settings (like telegram tokens, system prompt)
+    let mut config = load_saved_config().unwrap_or_default();
+
+    // If the user didn't enter a new key, but selected the same provider they already had,
+    // we preserve their old API key. Otherwise, we overwrite it (or set to None).
+    let final_api_key = if api_key.is_none() && config.provider.provider == provider.name {
+        config.provider.api_key.clone()
+    } else {
+        api_key.clone()
+    };
+
+    // Update only the provider section
+    config.provider = ProviderConfig {
+        provider: provider.name.to_string(),
+        model: model.to_string(),
+        api_key: final_api_key,
+        api_base: provider.api_base.map(|s| s.to_string()),
         ..Default::default()
     };
+
 
     let config_path = ZenClawConfig::default_path();
     config.save(&config_path)?;
