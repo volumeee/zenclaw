@@ -53,6 +53,7 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 - **5 LLM providers** — OpenAI, Gemini, Ollama, OpenRouter, LM Studio
 - **Auto-fallback** — switch models on failure
 - **Multi-agent router** — specialized sub-agents
+- **Exponential backoff** — 3-retry with smart delay on provider errors
 
 </td>
 <td width="50%">
@@ -61,6 +62,7 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 
 - Shell execution, file I/O, directory listing
 - Web fetch (HTTP), web search (DuckDuckGo)
+- Web scrape (Jina AI + local Puppeteer fallback)
 - Cron scheduler, system info, health monitor
 - History export, file indexer, env inspector
 - Webhook receiver + extensible plugins
@@ -73,7 +75,7 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 ### 📡 5 Channel Adapters
 
 - **CLI** — interactive terminal chat
-- **REST API** — HTTP endpoints (Axum)
+- **REST API** — HTTP endpoints (Axum) + SSE streaming
 - **Telegram** — bot via raw HTTP
 - **Discord** — bot via gateway
 - **WhatsApp** — via HTTP bridge
@@ -101,6 +103,7 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 - **Request logging** — method, path, status, timing
 - **Runtime metrics** — requests, tokens, tool calls
 - **Auto-updater** — checks GitHub releases
+- **Live log monitoring** — real-time log tailing with color
 
 </td>
 <td>
@@ -157,7 +160,7 @@ ZenClaw is built for the edge — where resources are scarce and reliability mat
 ### Crate Structure
 
 ```
-zenclaw/                                    7,758 lines of Rust
+zenclaw/                                    8,976 lines of Rust
 ├── crates/
 │   ├── zenclaw-core/                       Core abstractions
 │   │   ├── agent.rs                        ReAct reasoning engine
@@ -168,11 +171,11 @@ zenclaw/                                    7,758 lines of Rust
 │   │   ├── config.rs                       TOML configuration
 │   │   ├── message.rs                      Chat message types
 │   │   ├── session.rs                      Session manager
-│   │   ├── bus.rs                          Async event bus
+│   │   ├── bus.rs                          Async event bus + format_status()
 │   │   └── error.rs                        Error types
 │   │
 │   ├── zenclaw-hub/                        Full implementations
-│   │   ├── api.rs                          REST API server (Axum)
+│   │   ├── api.rs                          REST API server (Axum) + SSE status_text
 │   │   ├── middleware.rs                   Rate limit, auth, logging
 │   │   ├── metrics.rs                      Runtime metrics collector
 │   │   ├── router.rs                       Multi-agent router
@@ -193,6 +196,7 @@ zenclaw/                                    7,758 lines of Rust
 │   │       ├── shell.rs                    Execute commands
 │   │       ├── filesystem.rs               File CRUD
 │   │       ├── web_fetch.rs                HTTP requests
+│   │       ├── web_scrape.rs               Extract Markdown from any URL
 │   │       ├── web_search.rs               DuckDuckGo search
 │   │       ├── system_info.rs              OS/arch info
 │   │       ├── cron.rs                     Task scheduler
@@ -203,9 +207,10 @@ zenclaw/                                    7,758 lines of Rust
 │   │       └── env.rs                      Env var inspector
 │   │
 │   └── zenclaw-cli/                        Binary entry point
-│       ├── main.rs                         CLI commands (11 commands)
+│       ├── main.rs                         CLI commands (12 commands)
 │       └── setup.rs                        Interactive TUI wizard
 │
+├── bridge/                                 Node.js Puppeteer bridge
 ├── Dockerfile                              Multi-stage build
 ├── docker-compose.yml                      One-command deploy
 ├── .github/workflows/
@@ -245,6 +250,15 @@ zenclaw setup    # Interactive wizard — pick provider, enter API key, choose m
 zenclaw chat                          # Interactive session
 zenclaw ask "Explain Rust lifetimes"  # One-shot question
 zenclaw chat --skill coding           # With coding skill active
+```
+
+### Monitor Live Logs
+
+```bash
+zenclaw logs                  # Tail last 50 log lines in real-time
+zenclaw logs --lines 100      # Tail last 100 lines
+# Logs stored at: ~/.local/share/zenclaw/logs/zenclaw.log.YYYY-MM-DD
+# Colors: ERROR=red WARN=yellow INFO=green DEBUG=blue
 ```
 
 ---
@@ -334,23 +348,24 @@ sudo systemctl enable --now zenclaw
 
 ## 🔧 Built-in Tools
 
-| Tool          | Description                                  |
-| ------------- | -------------------------------------------- |
-| `exec`        | Execute shell commands with output capture   |
-| `read_file`   | Read file contents with optional line ranges |
-| `write_file`  | Create or overwrite files                    |
-| `edit_file`   | Search & replace within files                |
-| `list_dir`    | List directory contents with metadata        |
-| `web_fetch`   | HTTP requests (GET/POST/PUT/DELETE)          |
-| `web_search`  | Search the internet via DuckDuckGo           |
-| `system_info` | OS, architecture, hostname, user info        |
-| `cron`        | Schedule delayed shell commands              |
-| `health`      | CPU, memory, disk, network, uptime           |
-| `history`     | Export conversations (JSON/Markdown)         |
-| `index_file`  | Index files into RAG knowledge base          |
-| `webhooks`    | Inspect received webhook events              |
-| `env`         | Check environment variables & API keys       |
-| + **Plugins** | Any shell script can become a tool           |
+| Tool          | Description                                             |
+| ------------- | ------------------------------------------------------- |
+| `exec`        | Execute shell commands with output capture              |
+| `read_file`   | Read file contents with optional line ranges            |
+| `write_file`  | Create or overwrite files                               |
+| `edit_file`   | Search & replace within files                           |
+| `list_dir`    | List directory contents with metadata                   |
+| `web_fetch`   | HTTP requests (GET/POST/PUT/DELETE) with custom headers |
+| `web_scrape`  | Extract clean Markdown from any URL (Jina + Puppeteer)  |
+| `web_search`  | Search the internet via DuckDuckGo                      |
+| `system_info` | OS, architecture, hostname, user info                   |
+| `cron`        | Schedule delayed shell commands                         |
+| `health`      | CPU, memory, disk, network, uptime                      |
+| `history`     | Export conversations (JSON/Markdown)                    |
+| `index_file`  | Index files into RAG knowledge base                     |
+| `webhooks`    | Inspect received webhook events                         |
+| `env`         | Check environment variables & API keys                  |
+| + **Plugins** | Any shell script can become a tool                      |
 
 ---
 
@@ -437,13 +452,26 @@ curl -X POST http://localhost:3000/v1/rag/search \
 
 ## 📊 API Endpoints
 
-| Method | Endpoint         | Description                |
-| ------ | ---------------- | -------------------------- |
-| `GET`  | `/v1/health`     | Health check               |
-| `GET`  | `/v1/status`     | System status + tool list  |
-| `POST` | `/v1/chat`       | Send message, get response |
-| `POST` | `/v1/rag/index`  | Index document into RAG    |
-| `POST` | `/v1/rag/search` | Search indexed documents   |
+| Method | Endpoint         | Description                           |
+| ------ | ---------------- | ------------------------------------- |
+| `GET`  | `/v1/health`     | Health check                          |
+| `GET`  | `/v1/status`     | System status + tool list             |
+| `POST` | `/v1/chat`       | Send message, get SSE response stream |
+| `POST` | `/v1/rag/index`  | Index document into RAG               |
+| `POST` | `/v1/rag/search` | Search indexed documents              |
+
+**SSE Events** (`POST /v1/chat` streams Server-Sent Events):
+
+| Event             | Description                                             |
+| ----------------- | ------------------------------------------------------- |
+| `agent_think`     | Agent iteration count payload                           |
+| `tool_use`        | Tool name + args being called                           |
+| `tool_result`     | Tool execution completed                                |
+| `memory_truncate` | History truncation event                                |
+| `tool_timeout`    | Tool exceeded 60s timeout                               |
+| `status_text`     | 🆕 Human-readable status (e.g. `🛠️ Reading Page (url)`) |
+| `result`          | Final agent response                                    |
+| `error`           | Error payload                                           |
 
 **Authentication:** Set `ZENCLAW_API_KEY` env var, then pass `Authorization: Bearer <key>` or `X-API-Key: <key>`.
 
@@ -493,23 +521,30 @@ scp target/aarch64-unknown-linux-gnu/release/zenclaw pi@raspberrypi:~/
 - [x] Full Interactive CLI UI Loop (`v0.1.6`)
 - [x] RAG / full-text search (SQLite FTS5)
 - [x] Persistent memory (SQLite)
+- [x] **Live Log Monitoring** — `zenclaw logs` real-time rolling tails with color (`v0.1.7`)
+- [x] **Centralized Event Formatting** — DRY `SystemEvent::format_status()` across all channels (`v0.1.7`)
+- [x] **SSE `status_text` stream** — human-readable status events via REST API (`v0.1.7`)
+- [x] **CLI Architecture Refactor** — `setup_bot_env()` factory eliminates ~100 lines of duplicated bootstrapping code (`v0.1.7`)
+- [x] **Web Scraping** — extract clean Markdown from any web page via Jina AI + local Puppeteer fallback
 
 **🔥 High Priority (Next)**
 
-- [ ] **Web Browser Extraction** (Extract clean Markdown from any website)
-- [ ] **Task Scheduler / Background Worker** (True autonomous cron jobs)
-- [ ] **Multimodal Input** (Image and audio parsing support via CLI/Bot)
+- [ ] **Vision / Multimodal Input** — Image understanding in `ChatRequest` (OpenAI vision API)
+- [ ] **Slack Channel** — adapter for Slack workspace bots
+- [ ] **RAG Auto-Inject** — automatically prepend relevant RAG context to system prompt
+- [ ] **Proactive Tasks** — background agent scheduling without user input trigger
 
 **🚀 Medium Priority**
 
-- [ ] **Vector Knowledge Base** (Integration with ChromaDB/Qdrant for local documents)
 - [ ] **Local Web Dashboard** (GUI for managing settings, prompts, and plugins easily)
 - [ ] **Multi-Agent Swarm** (Agent orchestration & collaboration)
+- [ ] **Vector Knowledge Base** (ChromaDB/Qdrant integration)
 
 **✨ Backlog**
 
-- [ ] Streaming responses (SSE)
+- [ ] Streaming responses (chunked SSE tokens)
 - [ ] ESP32 thin client (no_std)
+- [ ] Signal & iMessage channel adapters
 
 ---
 
@@ -535,11 +570,9 @@ git tag v0.1.0 && git push origin v0.1.0
 
 ## 📜 License
 
-MIT — Use it however you want. Build amazing things.
-
----
+## MIT — Use it however you want. Build amazing things.
 
 <p align="center">
   <sub>Built with ❤️ and 🦀 by <a href="https://github.com/volumeee">volumeee</a></sub><br/>
-  <sub><b>7,758</b> lines of Rust · <b>43</b> source files · <b>5.1MB</b> binary · <b>~12MB</b> RAM</sub>
+  <sub><b>8,976</b> lines of Rust · <b>46</b> source files · <b>5.1MB</b> binary · <b>~12MB</b> RAM</sub>
 </p>
