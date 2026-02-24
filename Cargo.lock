@@ -3873,7 +3873,7 @@ dependencies = [
 
 [[package]]
 name = "zenclaw-cli"
-version = "0.1.0"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3896,7 +3896,7 @@ dependencies = [
 
 [[package]]
 name = "zenclaw-core"
-version = "0.1.0"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3915,7 +3915,7 @@ dependencies = [
 
 [[package]]
 name = "zenclaw-hub"
-version = "0.1.0"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "async-trait",
