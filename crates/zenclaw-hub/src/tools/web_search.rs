@@ -680,13 +680,14 @@ fn strip_html_tags(s: &str) -> String {
 /// Parse Jina Search plain-text/markdown response.
 ///
 /// Jina text format (when JSON is unavailable or rate-limited):
-/// ```
+/// ```text
 /// 1. [Title](https://url)
 /// Description or content snippet...
 ///
 /// 2. [Title](https://url)
 /// ...
 /// ```
+
 fn parse_jina_text(text: &str, max: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
