@@ -188,13 +188,23 @@ impl LlmProvider for OpenAiProvider {
             .map(|t| serde_json::to_value(t).unwrap_or_default())
             .collect();
 
+        let mut max_tokens = request.max_tokens;
+        if self.config.provider == "groq" {
+            // Groq free tier has very tight Tokens Per Minute limits (e.g. 6000 TPM limit).
+            // It calculates request cost as: input_tokens + max_tokens.
+            // If max_tokens is 4096, it instantly throws a 429 Too Many Requests.
+            // We clamp it to 1024 to survive the free tier limits.
+            max_tokens = max_tokens.min(1024);
+        }
+
         let body = ApiRequest {
             model: model.clone(),
             messages,
             tools,
-            max_tokens: request.max_tokens,
+            max_tokens,
             temperature: request.temperature,
         };
+
 
         let api_key = self.config.api_key.as_deref().unwrap_or("");
 
