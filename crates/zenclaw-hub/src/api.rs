@@ -178,10 +178,17 @@ async fn chat_stream(
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         while let Ok(event) = bus_rx.recv().await {
+            // Raw JSON payloads
             let data_str = serde_json::to_string(&event.data).unwrap_or_default();
             let sse_event = Event::default().event(event.event_type.clone()).data(data_str);
             if tx_clone.send(Ok(sse_event)).await.is_err() {
                 break;
+            }
+            
+            // Human readable status stream
+            if let Some(msg) = event.format_status() {
+                let status_event = Event::default().event("status_text").data(msg);
+                let _ = tx_clone.send(Ok(status_event)).await;
             }
         }
     });

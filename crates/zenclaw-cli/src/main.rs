@@ -188,6 +188,13 @@ enum Commands {
 
     /// 🔄 Check for updates
     Update,
+
+    /// 🐛 Monitor ZenClaw internal diagnostic logs
+    Logs {
+        /// Number of tail lines to show initially
+        #[arg(short, long, default_value_t = 50)]
+        lines: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -299,6 +306,40 @@ fn create_provider(
     }
 }
 
+async fn setup_bot_env(
+    provider_name: Option<&str>,
+    model: Option<&str>,
+    api_key: Option<&str>,
+    api_base: Option<&str>,
+    skill_prompt: Option<&str>,
+) -> anyhow::Result<(Agent, OpenAiProvider, SqliteMemory, String, String)> {
+    let (resolved_provider_name, resolved_model, resolved_api_key, resolved_api_base) =
+        resolve_config(provider_name, model, api_key, api_base)?;
+
+    let provider = create_provider(
+        &resolved_provider_name,
+        &resolved_api_key,
+        &resolved_model,
+        resolved_api_base.as_deref(),
+    );
+
+    let data = setup::data_dir();
+    std::fs::create_dir_all(&data)?;
+
+    let db_path = data.join("memory.db");
+    let memory = SqliteMemory::open(&db_path)?;
+
+    let agent = build_agent(&resolved_model, skill_prompt).await;
+
+    Ok((
+        agent,
+        provider,
+        memory,
+        resolved_provider_name,
+        resolved_model,
+    ))
+}
+
 /// Resolve provider config: CLI args → saved config → env vars → error
 fn resolve_config(
     cli_provider: Option<&str>,
@@ -401,10 +442,19 @@ async fn build_agent(model: &str, skill_prompt: Option<&str>) -> Agent {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Setup filesystem log trailing instead of dumping tracing to stdout
+    let log_dir = setup::data_dir().join("logs");
+    std::fs::create_dir_all(&log_dir).ok();
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "zenclaw.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,zenclaw_core=debug,zenclaw_hub=debug")),
         )
+        .with_writer(non_blocking)
+        .with_ansi(false) // logs in file should probably not have color
         .init();
 
     let cli = Cli::parse();
@@ -540,6 +590,11 @@ async fn main() -> anyhow::Result<()> {
             run_update_check().await?;
         }
 
+        // ─── Logs Monitoring ───────────────────────────
+        Some(Commands::Logs { lines }) => {
+            run_logs(lines).await?;
+        }
+
         // ─── Default: show interactive menu loop ─────────────
         None => {
             loop {
@@ -559,7 +614,8 @@ async fn main() -> anyhow::Result<()> {
                     "6. 📚 Manage Skills",
                     "7. ⚙️  Settings",
                     "8. 🔄 Check for Updates",
-                    "9. ❌ Exit",
+                    "9. 🐛 View Live Logs",
+                    "10. ❌ Exit",
                 ];
 
                 if !has_config {
@@ -606,8 +662,10 @@ async fn main() -> anyhow::Result<()> {
                         2 => setup::run_setup(),
                         _ => Ok(()),
                     }
-                } else if choice.contains("Check for Updates") {
+                } else if choice.contains("Updates") {
                     run_update_check().await
+                } else if choice.contains("Live Logs") {
+                    run_logs(50).await
                 } else if choice.contains("Exit") {
                     println!("Goodbye! 🦀");
                     should_exit = true;
@@ -644,33 +702,23 @@ async fn run_chat(
     api_base: Option<&str>,
     active_skills: Vec<String>,
 ) -> anyhow::Result<()> {
-    let (provider_name, model, api_key, api_base) =
-        resolve_config(provider_name, model, api_key, api_base)?;
-
-    let provider = create_provider(&provider_name, &api_key, &model, api_base.as_deref());
-
-    let data = setup::data_dir();
-    std::fs::create_dir_all(&data)?;
-
-    let db_path = data.join("memory.db");
-    let memory = SqliteMemory::open(&db_path)?;
-
-    // Load skills
-    let mut skill_mgr = SkillManager::new(&data.join("skills"));
-    skill_mgr.load_all().await?;
-
     let skill_prompt = if active_skills.is_empty() {
         None
     } else {
+        let data = setup::data_dir();
+        let mut skill_mgr = SkillManager::new(&data.join("skills"));
+        let _ = skill_mgr.load_all().await;
         let prompt = skill_mgr.build_prompt(&active_skills);
-        if prompt.is_empty() {
-            None
-        } else {
-            Some(prompt)
-        }
+        if prompt.is_empty() { None } else { Some(prompt) }
     };
 
-    let agent = build_agent(&model, skill_prompt.as_deref()).await;
+    let (agent, provider, memory, provider_name, model) = setup_bot_env(
+        provider_name,
+        model,
+        api_key,
+        api_base,
+        skill_prompt.as_deref()
+    ).await?;
 
     print_banner();
     println!(
@@ -744,6 +792,9 @@ async fn run_chat(
                 continue;
             }
             "/skills" => {
+                let data = setup::data_dir();
+                let mut skill_mgr = SkillManager::new(&data.join("skills"));
+                let _ = skill_mgr.load_all().await;
                 println!("\n{}", "📚 Available Skills:".bold());
                 for skill in skill_mgr.list() {
                     let active = if active_skills.contains(&skill.name) {
@@ -790,50 +841,8 @@ async fn run_chat(
 
         let _bg_task = tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
-                match event.event_type.as_str() {
-                    "agent_think" => {
-                        let it = event.data["iteration"].as_u64().unwrap_or(0);
-                        sp_clone.set_message(format!("🧠 Thinking... (iteration {})", it));
-                    }
-                    "tool_use" => {
-                        if let Some(tool) = event.data["tool"].as_str() {
-                            let mut target = String::new();
-                            let json_args_opt = event.data["args"].as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-                            if let Some(json_args) = json_args_opt {
-                                if let Some(url) = json_args["url"].as_str() {
-                                    target = format!(" ({})", url);
-                                } else if let Some(path) = json_args["path"].as_str() {
-                                    target = format!(" ({})", path);
-                                } else if let Some(query) = json_args["query"].as_str() {
-                                    target = format!(" ({})", query);
-                                } else if let Some(cmd) = json_args["command"].as_str() {
-                                    target = format!(" ({})", cmd);
-                                }
-                            }
-                            
-                            let human_tool = match tool {
-                                "web_scrape" | "web_fetch" => "Reading Page",
-                                "web_search" => "Searching Web",
-                                "shell" => "Running Command",
-                                "read_file" | "list_dir" => "Checking File",
-                                "write_file" | "edit_file" => "Modifying Code",
-                                _ => tool,
-                            };
-                            sp_clone.set_message(format!("🛠️ {}{}", human_tool, target));
-                        }
-                    }
-                    "tool_result" => {
-                        sp_clone.set_message("✅ Analysis Complete. Thinking...".to_string());
-                    }
-                    "memory_truncate" => {
-                        sp_clone.set_message("🧹 Summarizing old memories...".to_string());
-                    }
-                    "tool_timeout" => {
-                        if let Some(tool) = event.data["tool"].as_str() {
-                            sp_clone.set_message(format!("⚠️ Tool timeout: {}", tool));
-                        }
-                    }
-                    _ => {}
+                if let Some(msg) = event.format_status() {
+                    sp_clone.set_message(msg);
                 }
             }
         });
@@ -978,21 +987,23 @@ async fn run_telegram(
         })
         .ok_or_else(|| anyhow::anyhow!("No Telegram bot token provided. Aborting."))?;
 
-    let provider = Arc::new(create_provider(&provider_name, &api_key, &model, None));
-
     let allowed: Vec<i64> = allowed_users
         .unwrap_or("")
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
-    let data = setup::data_dir();
-    std::fs::create_dir_all(&data)?;
-
-    let db_path = data.join("memory.db");
-    let memory = Arc::new(SqliteMemory::open(&db_path)?);
-
-    let agent = Arc::new(build_agent(&model, None).await);
+    let (agent, provider, memory, provider_name, model) = setup_bot_env(
+        Some(&provider_name),
+        Some(&model),
+        Some(&api_key),
+        None,
+        None
+    ).await?;
+    
+    let provider = Arc::new(provider);
+    let agent = Arc::new(agent);
+    let memory = Arc::new(memory);
 
     print_banner();
     println!("  {} {}", "Mode:".dimmed(), "🤖 Telegram Bot".green().bold());
@@ -1068,14 +1079,17 @@ async fn run_discord(
         })
         .ok_or_else(|| anyhow::anyhow!("No Discord bot token provided. Aborting."))?;
 
-    let provider = Arc::new(create_provider(&provider_name, &api_key, &model, None));
-
-    let data = setup::data_dir();
-    std::fs::create_dir_all(&data)?;
-    let db_path = data.join("memory.db");
-    let memory = Arc::new(SqliteMemory::open(&db_path)?);
-
-    let agent = Arc::new(build_agent(&model, None).await);
+    let (agent, provider, memory, provider_name, model) = setup_bot_env(
+        Some(&provider_name),
+        Some(&model),
+        Some(&api_key),
+        None,
+        None
+    ).await?;
+    
+    let provider = Arc::new(provider);
+    let agent = Arc::new(agent);
+    let memory = Arc::new(memory);
 
     print_banner();
     println!("  {} {}", "Mode:".dimmed(), "🎮 Discord Bot".green().bold());
@@ -1173,22 +1187,16 @@ async fn run_serve(
     model: Option<&str>,
     api_key: Option<&str>,
 ) -> anyhow::Result<()> {
-    let (provider_name, model, api_key, api_base) =
-        resolve_config(provider_name, model, api_key, None)?;
-
-    let provider = create_provider(&provider_name, &api_key, &model, api_base.as_deref());
+    let (agent, provider, memory, provider_name, model) = setup_bot_env(
+        provider_name,
+        model,
+        api_key,
+        None,
+        None
+    ).await?;
     let data = setup::data_dir();
-
-    // Memory
-    let db_path = data.join("memory.db");
-    let memory = SqliteMemory::open(&db_path)?;
-
-    // RAG
     let rag_path = data.join("rag.db");
     let rag = zenclaw_hub::memory::RagStore::open(&rag_path).ok();
-
-    // Agent
-    let agent = build_agent(&model, None).await;
 
     print_banner();
     println!("  {} {}", "Mode:".dimmed(), "🌐 REST API Server".green().bold());
@@ -1239,18 +1247,13 @@ async fn run_whatsapp(
     api_key: Option<&str>,
     allowed_numbers: Option<&str>,
 ) -> anyhow::Result<()> {
-    let (provider_name, model, api_key, api_base) =
-        resolve_config(provider_name, model, api_key, None)?;
-
-    let provider = create_provider(&provider_name, &api_key, &model, api_base.as_deref());
-    let data = setup::data_dir();
-
-    // Memory
-    let db_path = data.join("memory.db");
-    let memory = SqliteMemory::open(&db_path)?;
-
-    // Agent
-    let agent = build_agent(&model, None).await;
+    let (agent, provider, memory, provider_name, model) = setup_bot_env(
+        provider_name,
+        model,
+        api_key,
+        None,
+        None
+    ).await?;
 
     print_banner();
     println!("  {} {}", "Mode:".dimmed(), "📱 WhatsApp Bot".green().bold());
@@ -1314,4 +1317,67 @@ async fn run_update_check() -> anyhow::Result<()> {
 
     println!();
     Ok(())
+}
+
+async fn run_logs(initial_lines: usize) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
+    use tokio::fs::File;
+    use chrono;
+    
+    let log_dir = setup::data_dir().join("logs");
+    let log_file = log_dir.join(format!("zenclaw.log.{}", chrono::Local::now().format("%Y-%m-%d")));
+    
+    if !log_file.exists() {
+        println!("{} Log file doesn't exist yet at: {}", "Info:".yellow(), log_file.display());
+        return Ok(());
+    }
+
+    println!("{}", format!("👀 Tailing ZenClaw logs from {}...", log_file.display()).cyan());
+    println!("{}", "Press Ctrl+C to exit.".dimmed());
+    println!();
+    
+    // Quick ugly way to get last N lines synchronously
+    if let Ok(content) = std::fs::read_to_string(&log_file) {
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(initial_lines);
+        for line in lines.into_iter().skip(start) {
+            println!("{}", colorize_log(line));
+        }
+    }
+
+    // Tail future lines asynchronously
+    let file = File::open(&log_file).await?;
+    let metadata = file.metadata().await?;
+    let mut reader = BufReader::new(file);
+    // Seek to end
+    reader.seek(std::io::SeekFrom::Start(metadata.len())).await?;
+    
+    let mut line_buf = String::new();
+    loop {
+        line_buf.clear();
+        let bytes = reader.read_line(&mut line_buf).await?;
+        if bytes == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            continue;
+        }
+        
+        let trimmed = line_buf.trim_end();
+        if !trimmed.is_empty() {
+            println!("{}", colorize_log(trimmed));
+        }
+    }
+}
+
+fn colorize_log(line: &str) -> String {
+    if line.contains(" ERROR ") {
+        line.red().to_string()
+    } else if line.contains(" WARN ") {
+        line.yellow().to_string()
+    } else if line.contains(" INFO ") {
+        line.green().to_string()
+    } else if line.contains(" DEBUG ") {
+        line.blue().to_string()
+    } else {
+        line.dimmed().to_string()
+    }
 }

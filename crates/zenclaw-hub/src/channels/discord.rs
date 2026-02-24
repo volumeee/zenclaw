@@ -166,67 +166,22 @@ impl DiscordChannel {
                                             if let Some(msg_id) = msg_id_clone {
                                                 let mut last_status = String::new();
                                                 while let Ok(event) = rx.recv().await {
-                                                    let mut new_status = String::new();
-                                                    match event.event_type.as_str() {
-                                                        "agent_think" => {
-                                                            let it = event.data["iteration"].as_u64().unwrap_or(0);
-                                                            new_status = format!("🧠 *Thinking...* (iteration {})", it);
+                                                    if let Some(msg) = event.format_status() {
+                                                        let new_status_msg = format!("*{}*", msg);
+                                                        if new_status_msg != last_status {
+                                                            last_status = new_status_msg.clone();
+                                                            let _ = edit_message(
+                                                                &bg_client,
+                                                                &bg_api_base,
+                                                                &bg_bot_token,
+                                                                &bg_channel_id,
+                                                                &msg_id,
+                                                                &new_status_msg,
+                                                            ).await;
+                                                            
+                                                            // Delay to avoid hitting Discord API rate limits
+                                                            tokio::time::sleep(Duration::from_millis(1000)).await;
                                                         }
-                                                        "tool_use" => {
-                                                            if let Some(tool) = event.data["tool"].as_str() {
-                                                                let mut target = String::new();
-                                                                let json_args_opt = event.data["args"].as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
-                                                                if let Some(json_args) = json_args_opt {
-                                                                    if let Some(url) = json_args["url"].as_str() {
-                                                                        target = format!(" ({})", url);
-                                                                    } else if let Some(path) = json_args["path"].as_str() {
-                                                                        target = format!(" ({})", path);
-                                                                    } else if let Some(query) = json_args["query"].as_str() {
-                                                                        target = format!(" ({})", query);
-                                                                    } else if let Some(cmd) = json_args["command"].as_str() {
-                                                                        target = format!(" ({})", cmd);
-                                                                    }
-                                                                }
-                                                                
-                                                                let human_tool = match tool {
-                                                                    "web_scrape" | "web_fetch" => "Reading Page",
-                                                                    "web_search" => "Searching Web",
-                                                                    "shell" => "Running Command",
-                                                                    "read_file" | "list_dir" => "Checking File",
-                                                                    "write_file" | "edit_file" => "Modifying Code",
-                                                                    _ => tool,
-                                                                };
-                                                                
-                                                                new_status = format!("🛠️ *{}*`{}`", human_tool, target);
-                                                            }
-                                                        }
-                                                        "tool_result" => {
-                                                            new_status = "✅ *Analysis Complete. Thinking...*".to_string();
-                                                        }
-                                                        "memory_truncate" => {
-                                                            new_status = "🧹 *Summarizing old memories...*".to_string();
-                                                        }
-                                                        "tool_timeout" => {
-                                                            if let Some(tool) = event.data["tool"].as_str() {
-                                                                new_status = format!("⚠️ *Tool timeout:* `{}`", tool);
-                                                            }
-                                                        }
-                                                        _ => {}
-                                                    }
-
-                                                    if !new_status.is_empty() && new_status != last_status {
-                                                        last_status = new_status.clone();
-                                                        let _ = edit_message(
-                                                            &bg_client,
-                                                            &bg_api_base,
-                                                            &bg_bot_token,
-                                                            &bg_channel_id,
-                                                            &msg_id,
-                                                            &new_status,
-                                                        ).await;
-                                                        
-                                                        // Delay to avoid hitting Discord API rate limits
-                                                        tokio::time::sleep(Duration::from_millis(1000)).await;
                                                     }
                                                 }
                                             }

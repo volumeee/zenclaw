@@ -25,3 +25,5 @@ dirs = { workspace = true }
 toml = { workspace = true }
 dialoguer = { workspace = true }
 console = { workspace = true }
+chrono = { workspace = true }
+tracing-appender = "0.2"

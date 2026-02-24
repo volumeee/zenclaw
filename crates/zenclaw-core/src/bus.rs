@@ -24,6 +24,59 @@ pub struct SystemEvent {
     pub data: serde_json::Value,
 }
 
+impl SystemEvent {
+    /// Helper to format a system event into a human-readable string for UI/UX
+    pub fn format_status(&self) -> Option<String> {
+        match self.event_type.as_str() {
+            "agent_think" => {
+                let it = self.data["iteration"].as_u64().unwrap_or(0);
+                Some(format!("🧠 Thinking... (iteration {})", it))
+            }
+            "tool_use" => {
+                if let Some(tool) = self.data["tool"].as_str() {
+                    let mut target = String::new();
+                    let json_args_opt = self.data["args"].as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+                    if let Some(json_args) = json_args_opt {
+                        if let Some(url) = json_args["url"].as_str() {
+                            target = format!(" ({})", url);
+                        } else if let Some(path) = json_args["path"].as_str() {
+                            target = format!(" ({})", path);
+                        } else if let Some(query) = json_args["query"].as_str() {
+                            target = format!(" ({})", query);
+                        } else if let Some(cmd) = json_args["command"].as_str() {
+                            target = format!(" ({})", cmd);
+                        }
+                    }
+                    
+                    let human_tool = match tool {
+                        "web_scrape" | "web_fetch" => "Reading Page",
+                        "web_search" => "Searching Web",
+                        "shell" => "Running Command",
+                        "read_file" | "list_dir" => "Checking File",
+                        "write_file" | "edit_file" => "Modifying Code",
+                        _ => tool,
+                    };
+                    
+                    Some(format!("🛠️ {}{}", human_tool, target))
+                } else {
+                    None
+                }
+            }
+            "tool_result" => {
+                Some("✅ Analysis Complete. Thinking...".to_string())
+            }
+            "memory_truncate" => {
+                Some("🧹 Summarizing old memories...".to_string())
+            }
+            "tool_timeout" => {
+                let tool = self.data["tool"].as_str().unwrap_or("unknown");
+                Some(format!("⚠️ Tool timeout: {}", tool))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// The event bus — central nervous system of ZenClaw.
 ///
 /// Components publish events, other components subscribe to them.

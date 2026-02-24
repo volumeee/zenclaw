@@ -74,7 +74,7 @@ impl Tool for WebhookTool {
         let action = args["action"].as_str().unwrap_or("list");
         let limit = args["limit"].as_u64().unwrap_or(10) as usize;
 
-        let store = self.store.lock().await;
+        let mut store = self.store.lock().await;
 
         match action {
             "list" => {
@@ -135,8 +135,6 @@ impl Tool for WebhookTool {
                 Ok(output)
             }
             "clear" => {
-                drop(store);
-                let mut store = self.store.lock().await;
                 let count = store.len();
                 store.clear();
                 Ok(format!("✅ Cleared {} webhook events.", count))
