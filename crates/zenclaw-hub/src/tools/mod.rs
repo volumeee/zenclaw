@@ -1,4 +1,6 @@
 pub mod shell;
+pub mod process;
+pub mod subagent;
 pub mod filesystem;
 pub mod web_fetch;
 pub mod web_scrape;
@@ -12,6 +14,8 @@ pub mod webhook;
 pub mod env;
 
 pub use shell::ShellTool;
+pub use process::ProcessTool;
+pub use subagent::SubAgentTool;
 pub use filesystem::{ReadFileTool, WriteFileTool, EditFileTool, ListDirTool};
 pub use web_fetch::WebFetchTool;
 pub use web_scrape::WebScrapeTool;

@@ -22,8 +22,8 @@ use zenclaw_hub::providers::OpenAiProvider;
 use zenclaw_hub::skills::SkillManager;
 use zenclaw_hub::plugins::PluginManager;
 use zenclaw_hub::tools::{
-    CronTool, EditFileTool, EnvTool, HealthTool, HistoryTool, ListDirTool, ReadFileTool,
-    ShellTool, SystemInfoTool, WebFetchTool, WebScrapeTool, WebSearchTool, WriteFileTool,
+    CronTool, EditFileTool, EnvTool, HealthTool, HistoryTool, ListDirTool, ProcessTool,
+    ReadFileTool, ShellTool, SubAgentTool, SystemInfoTool, WebFetchTool, WebScrapeTool, WebSearchTool, WriteFileTool,
 };
 
 // ─── CLI Definition ────────────────────────────────────────
@@ -369,8 +369,9 @@ async fn build_agent(model: &str, skill_prompt: Option<&str>) -> Agent {
         ..Default::default()
     });
 
-    // Core tools
     agent.tools.register(ShellTool::new());
+    agent.tools.register(ProcessTool::new());
+    agent.tools.register(SubAgentTool::new());
     agent.tools.register(ReadFileTool::new());
     agent.tools.register(WriteFileTool::new());
     agent.tools.register(EditFileTool::new());

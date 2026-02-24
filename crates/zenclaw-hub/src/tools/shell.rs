@@ -76,8 +76,13 @@ impl Tool for ShellTool {
 
         tracing::info!("Executing: {}", command);
 
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
+        #[cfg(target_os = "windows")]
+        let (shell, arg) = ("cmd", "/C");
+        #[cfg(not(target_os = "windows"))]
+        let (shell, arg) = ("sh", "-c");
+
+        let mut cmd = Command::new(shell);
+        cmd.arg(arg)
             .arg(&command)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

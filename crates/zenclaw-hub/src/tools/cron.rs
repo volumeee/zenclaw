@@ -54,6 +54,7 @@ impl CronTool {
         }
     }
 
+    #[allow(clippy::collapsible_if)]
     fn start_worker(&self) {
         let db_path = self.db_path.clone();
         
@@ -100,8 +101,13 @@ impl CronTool {
 
                         // Execute the command in the background
                         tokio::spawn(async move {
-                            let result = tokio::process::Command::new("sh")
-                                .arg("-c")
+                            #[cfg(target_os = "windows")]
+                            let (shell, arg) = ("cmd", "/C");
+                            #[cfg(not(target_os = "windows"))]
+                            let (shell, arg) = ("sh", "-c");
+
+                            let result = tokio::process::Command::new(shell)
+                                .arg(arg)
                                 .arg(&cmd_clone)
                                 .output()
                                 .await;
