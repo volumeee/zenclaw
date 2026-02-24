@@ -22,7 +22,10 @@ env:
 jobs:
   build-and-release:
     name: Build & Release (${{ matrix.name }})
+    # Only the repo owner can trigger a release build
+    if: github.actor == 'volumeee'
     runs-on: ${{ matrix.os }}
+
     strategy:
       fail-fast: false
       matrix:

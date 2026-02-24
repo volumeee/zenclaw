@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [main] # Only runs on direct push to main — PRs do NOT trigger CI
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,11 +29,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
-  # ── Detect version change ─────────────────────────────────────────────────
+  # ── Detect version change — OWNER ONLY ──────────────────────────────────────
   detect-version:
     name: Detect Version Change
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only the repo owner can trigger auto-release; other committers are skipped
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.actor == 'volumeee'
     outputs:
       changed: ${{ steps.check.outputs.changed }}
       version: ${{ steps.check.outputs.version }}
