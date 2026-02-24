@@ -159,8 +159,8 @@ impl Agent {
             };
 
             let mut retry_count = 0;
-            let max_retries = 3;
-            let mut backoff_ms = 1000;
+            let max_retries = 5; // Increased from 3 to allow waiting out rate limits
+            let mut backoff_ms = 2000;
 
             let response: LlmResponse = loop {
                 match provider.chat(request.clone()).await {
@@ -170,17 +170,37 @@ impl Agent {
                             tracing::error!("LLM Provider failed after {} retries: {}", max_retries, e);
                             return Err(e);
                         }
-                        tracing::warn!("LLM Error: {}. Retrying in {}ms...", e, backoff_ms);
+
+                        let err_str = e.to_string();
+                        // 429 handles "Too Many Requests" rate limit
+                        let is_rate_limit = err_str.contains("429") || err_str.to_lowercase().contains("rate limit");
+                        
+                        let wait_ms = if is_rate_limit {
+                            // Free tiers (e.g. 3 RPM) need ~20s cool-off between retries.
+                            20_000
+                        } else {
+                            backoff_ms
+                        };
+
+                        tracing::warn!("LLM Error: {}. Retrying in {}ms...", e, wait_ms);
                         if let Some(b) = bus {
                             b.publish_system(SystemEvent {
                                 run_id: session_key.to_string(),
                                 event_type: "llm_retry".into(),
-                                data: serde_json::json!({ "attempt": retry_count + 1, "error": e.to_string() }),
+                                data: serde_json::json!({ 
+                                    "attempt": retry_count + 1, 
+                                    "error": e.to_string(),
+                                    "is_rate_limit": is_rate_limit,
+                                    "wait_ms": wait_ms,
+                                }),
                             });
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+                        
                         retry_count += 1;
-                        backoff_ms *= 2;
+                        if !is_rate_limit {
+                            backoff_ms *= 2;
+                        }
                     }
                 }
             };

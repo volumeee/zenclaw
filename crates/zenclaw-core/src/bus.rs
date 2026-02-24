@@ -96,8 +96,16 @@ impl SystemEvent {
 
             "llm_retry" => {
                 let attempt = self.data["attempt"].as_u64().unwrap_or(1);
-                Some(format!("🔁 Connection hiccup, retrying... (attempt {})", attempt))
+                let is_rate_limit = self.data["is_rate_limit"].as_bool().unwrap_or(false);
+                let wait_ms = self.data["wait_ms"].as_u64().unwrap_or(2000);
+                
+                if is_rate_limit {
+                    Some(format!("⏳ Rate limit hit (API quota/limits). Waiting {}s before retry (attempt {})...", wait_ms / 1000, attempt))
+                } else {
+                    Some(format!("🔁 Connection hiccup, retrying in {}s... (attempt {})", wait_ms / 1000, attempt))
+                }
             }
+
 
             _ => None,
         }

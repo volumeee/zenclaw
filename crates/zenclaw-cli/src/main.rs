@@ -270,7 +270,8 @@ fn default_model(provider: &str) -> &str {
     match provider {
         "openai" => "gpt-4o-mini",
         "openrouter" => "openai/gpt-4o-mini",
-        "gemini" => "gemini-2.0-flash",
+        "gemini" => "gemini-2.5-flash",
+
         "anthropic" => "claude-3-5-sonnet-20241022",
         "ollama" => "llama3.2",
         "lmstudio" => "local-model",

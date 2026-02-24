@@ -23,8 +23,20 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "openai",
         display: "🤖 OpenAI (GPT-4o, GPT-4o-mini)",
-        models: &["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"],
+        models: &[
+            "gpt-4o-mini",
+            "gpt-4o",
+            "o3-mini",
+            "o1",
+            "o4-mini",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-5",
+            "gpt-5.1",
+            "gpt-5.2",
+        ],
         default_model: "gpt-4o-mini",
+
         env_var: "OPENAI_API_KEY",
         api_base: None,
         needs_key: true,
@@ -32,8 +44,16 @@ const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
         name: "gemini",
         display: "💎 Google Gemini (Free tier available!)",
-        models: &["gemini-3-flash", "gemini-3.1-pro", "gemini-2.5-flash"],
-        default_model: "gemini-3-flash", // Updated default model to match new list
+        models: &[
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-3-flash",
+            "gemini-3.1-pro",
+        ],
+        default_model: "gemini-2.5-flash",
+
         env_var: "GEMINI_API_KEY",
         api_base: Some("https://generativelanguage.googleapis.com/v1beta/openai"),
         needs_key: true,
