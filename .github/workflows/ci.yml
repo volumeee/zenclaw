@@ -48,17 +48,23 @@ jobs:
         id: check
         shell: bash
         run: |
+          # Get current version from Cargo.toml
           CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          PREV=$(git show HEAD~1:Cargo.toml 2>/dev/null | grep '^version' | head -1 | sed 's/version = "\(.*\)"/\1/' || echo "")
-          echo "Current: $CURRENT | Previous: $PREV"
+          TAG="v$CURRENT"
+
           echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "tag=v$CURRENT"    >> "$GITHUB_OUTPUT"
-          if [ "$CURRENT" != "$PREV" ] && [ -n "$CURRENT" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "🚀 Version bump detected: $PREV → $CURRENT"
-          else
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+
+          # Fetch all existing tags from remote
+          git fetch --tags --quiet
+
+          # Check if this tag already exists in the repo
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "⏭️  No version change — skipping release."
+            echo "⏭️  Tag $TAG already exists — skipping release."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "🚀 New version detected: $TAG (no existing tag) — triggering release."
           fi
 
   # ── Create annotated tag ──────────────────────────────────────────────────
