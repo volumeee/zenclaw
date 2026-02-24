@@ -16,6 +16,7 @@ reqwest = { workspace = true }
 tracing = { workspace = true }
 rusqlite = { workspace = true }
 chrono = { workspace = true }
+cron = { workspace = true }
 uuid = { workspace = true }
 hostname = "0.4"
 dirs = { workspace = true }

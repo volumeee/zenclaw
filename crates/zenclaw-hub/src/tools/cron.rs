@@ -1,59 +1,149 @@
-//! Cron/scheduler tool — run tasks on a schedule.
+//! Cron/scheduler tool — run tasks on a schedule (Persistent Background Worker).
 //!
-//! Allows the agent to schedule one-shot delayed tasks.
-//! Useful for reminders, periodic checks, and delayed actions.
+//! Allows the agent to schedule one-shot or periodic cron jobs.
 
-use std::sync::Arc;
+use std::str::FromStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::Utc;
+use cron::Schedule;
+use rusqlite::Connection;
 use serde_json::{json, Value};
-use tokio::sync::Mutex;
-use tracing::info;
+use std::path::PathBuf;
+use tracing::{error, info, warn};
 
 use zenclaw_core::error::Result;
 use zenclaw_core::tool::Tool;
 
-/// A scheduled task.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct ScheduledTask {
-    id: String,
-    description: String,
-    delay_secs: u64,
-    command: String,
-    status: TaskStatus,
-}
-
-#[derive(Debug, Clone)]
-enum TaskStatus {
-    Pending,
-    Running,
-    Done(String),
-    Failed(String),
-}
-
-impl std::fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Pending => write!(f, "⏳ pending"),
-            Self::Running => write!(f, "🔄 running"),
-            Self::Done(r) => write!(f, "✅ done: {}", r),
-            Self::Failed(e) => write!(f, "❌ failed: {}", e),
-        }
-    }
-}
-
-/// Cron tool — schedule delayed tasks.
+/// Persistent Cron tool — schedule and execute background tasks via SQLite.
 pub struct CronTool {
-    tasks: Arc<Mutex<Vec<ScheduledTask>>>,
+    db_path: PathBuf,
 }
 
 impl CronTool {
     pub fn new() -> Self {
-        Self {
-            tasks: Arc::new(Mutex::new(Vec::new())),
+        let data_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("zenclaw")
+            .join("cron");
+        std::fs::create_dir_all(&data_dir).unwrap_or_default();
+        let db_path = data_dir.join("cron.db");
+
+        let tool = Self { db_path };
+        tool.init_db();
+        tool.start_worker();
+        tool
+    }
+
+    fn init_db(&self) {
+        if let Ok(conn) = Connection::open(&self.db_path) {
+            let _ = conn.execute(
+                "CREATE TABLE IF NOT EXISTS cron_jobs (
+                    id TEXT PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    schedule TEXT,
+                    next_run INTEGER NOT NULL,
+                    status TEXT NOT NULL
+                )",
+                [],
+            );
+        } else {
+            warn!("Failed to open cron.db. Background worker may not persist tasks.");
         }
+    }
+
+    fn start_worker(&self) {
+        let db_path = self.db_path.clone();
+        
+        tokio::spawn(async move {
+            info!("⚙️ Persistent Background Worker started.");
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+
+                let now = Utc::now().timestamp();
+                let mut jobs_to_run = Vec::new();
+
+                if let Ok(conn) = Connection::open(&db_path) {
+                    // Find pending tasks whose next_run <= now
+                    if let Ok(mut stmt) = conn.prepare(
+                        "SELECT id, command, schedule, description FROM cron_jobs 
+                         WHERE next_run <= ?1 AND status = 'pending'",
+                    ) {
+                        if let Ok(rows) = stmt.query_map([now], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        }) {
+                            for row in rows.flatten() {
+                                jobs_to_run.push(row);
+                            }
+                        }
+                    }
+
+                    for (id, command, schedule_opt, desc) in jobs_to_run {
+                        // Mark as running
+                        let _ = conn.execute(
+                            "UPDATE cron_jobs SET status = 'running' WHERE id = ?1",
+                            [&id],
+                        );
+
+                        info!("⏰ Running Cron Job: {} ({})", desc, id);
+                        let cmd_clone = command.clone();
+                        let id_clone = id.clone();
+                        let db_path_clone = db_path.clone();
+                        let sched_clone = schedule_opt.clone();
+
+                        // Execute the command in the background
+                        tokio::spawn(async move {
+                            let result = tokio::process::Command::new("sh")
+                                .arg("-c")
+                                .arg(&cmd_clone)
+                                .output()
+                                .await;
+
+                            let new_status = if let Ok(out) = result {
+                                if out.status.success() {
+                                    info!("✅ Cron Job {} Success", id_clone);
+                                    "done"
+                                } else {
+                                    error!("❌ Cron Job {} Failed: {}", id_clone, String::from_utf8_lossy(&out.stderr));
+                                    "failed"
+                                }
+                            } else {
+                                "failed"
+                            };
+
+                            // Update DB: either set next schedule or mark completed/failed
+                            if let Ok(conn2) = Connection::open(&db_path_clone) {
+                                if let Some(sch_str) = sched_clone {
+                                    if let Ok(schedule) = Schedule::from_str(&sch_str) {
+                                        // If valid schedule, get next run
+                                        if let Some(next) = schedule.upcoming(Utc).next() {
+                                            let _ = conn2.execute(
+                                                "UPDATE cron_jobs SET status = 'pending', next_run = ?1 WHERE id = ?2",
+                                                rusqlite::params![next.timestamp(), id_clone],
+                                            );
+                                            return;
+                                        }
+                                    }
+                                }
+                                
+                                // One-shot task or invalid cron expr marks as done/failed.
+                                let _ = conn2.execute(
+                                    "UPDATE cron_jobs SET status = ?1 WHERE id = ?2",
+                                    rusqlite::params![new_status, id_clone],
+                                );
+                            }
+                        });
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -70,7 +160,12 @@ impl Tool for CronTool {
     }
 
     fn description(&self) -> &str {
-        "Schedule a delayed task or list scheduled tasks. Actions: 'schedule' (run a shell command after delay), 'list' (show all tasks)."
+        "Background Task Scheduler. Creates persistent background processes. 
+Actions: 
+- 'schedule' (one-time execution after delay_seconds)
+- 'cron' (periodic execution using 7-field standard cron string e.g. '0 30 9 * * * *' : sec min hour dom mon dow year).
+- 'list' (list all active/completed jobs)
+- 'delete' (delete a job via ID)."
     }
 
     fn parameters(&self) -> Value {
@@ -79,20 +174,28 @@ impl Tool for CronTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["schedule", "list"],
-                    "description": "Action: 'schedule' or 'list'"
+                    "enum": ["schedule", "cron", "list", "delete"],
+                    "description": "Action type"
                 },
                 "command": {
                     "type": "string",
-                    "description": "Shell command to run (for 'schedule')"
+                    "description": "Shell command to execute."
                 },
                 "delay_seconds": {
                     "type": "integer",
-                    "description": "Delay in seconds before running (for 'schedule')"
+                    "description": "Delay before first run (only for 'schedule' action)."
+                },
+                "cron_expression": {
+                    "type": "string",
+                    "description": "7-field cron string (only for 'cron' action). E.g. '0 0 12 * * * *'"
                 },
                 "description": {
                     "type": "string",
-                    "description": "Human-readable description of the task"
+                    "description": "A short memo of what the task does."
+                },
+                "job_id": {
+                    "type": "string",
+                    "description": "ID of the job (required for 'delete')."
                 }
             },
             "required": ["action"]
@@ -101,103 +204,83 @@ impl Tool for CronTool {
 
     async fn execute(&self, args: Value) -> Result<String> {
         let action = args["action"].as_str().unwrap_or("list");
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e: rusqlite::Error| zenclaw_core::error::ZenClawError::Other(format!("DB error: {}", e)))?;
 
         match action {
-            "schedule" => {
+            "schedule" | "cron" => {
                 let command = args["command"].as_str().unwrap_or("").to_string();
-                let delay = args["delay_seconds"].as_u64().unwrap_or(60);
                 let desc = args["description"]
                     .as_str()
-                    .unwrap_or("Scheduled task")
+                    .unwrap_or("Scheduled Task")
                     .to_string();
 
                 if command.is_empty() {
-                    return Ok("Error: command is required for 'schedule' action".to_string());
+                    return Ok("Error: 'command' required for scheduling.".into());
                 }
 
-                let id = format!("task_{}", chrono::Utc::now().timestamp());
-
-                let task = ScheduledTask {
-                    id: id.clone(),
-                    description: desc.clone(),
-                    delay_secs: delay,
-                    command: command.clone(),
-                    status: TaskStatus::Pending,
+                let id = format!("task_{}", Utc::now().timestamp());
+                let (next_run, schedule_str) = if action == "cron" {
+                    let expr = args["cron_expression"].as_str().unwrap_or("");
+                    match Schedule::from_str(expr) {
+                        Ok(sch) => {
+                            let next = sch.upcoming(Utc).next()
+                                .ok_or_else(|| zenclaw_core::error::ZenClawError::Other("Cron expression has no future runs".into()))?;
+                            (next.timestamp(), Some(expr.to_string()))
+                        }
+                        Err(e) => return Ok(format!("Error parsing cron: {}", e)),
+                    }
+                } else {
+                    let delay = args["delay_seconds"].as_u64().unwrap_or(60);
+                    (Utc::now().timestamp() + delay as i64, None)
                 };
 
-                self.tasks.lock().await.push(task);
+                conn.execute(
+                    "INSERT INTO cron_jobs (id, description, command, schedule, next_run, status) 
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+                    rusqlite::params![id, desc, command, schedule_str, next_run],
+                ).map_err(|e| zenclaw_core::error::ZenClawError::Other(e.to_string()))?;
 
-                // Spawn delayed execution
-                let tasks = self.tasks.clone();
-                let task_id = id.clone();
-                let spawn_desc = desc.clone();
-                let spawn_cmd = command.clone();
-                tokio::spawn(async move {
-                    info!("⏰ Task {} scheduled: {} in {}s", task_id, spawn_desc, delay);
-                    tokio::time::sleep(Duration::from_secs(delay)).await;
-
-                    // Update status
-                    if let Some(task) = tasks.lock().await.iter_mut().find(|t| t.id == task_id) {
-                        task.status = TaskStatus::Running;
-                    }
-
-                    // Execute
-                    let result = tokio::process::Command::new("sh")
-                        .arg("-c")
-                        .arg(&spawn_cmd)
-                        .output()
-                        .await;
-
-                    match result {
-                        Ok(output) => {
-                            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                            if let Some(task) =
-                                tasks.lock().await.iter_mut().find(|t| t.id == task_id)
-                            {
-                                task.status = if output.status.success() {
-                                    TaskStatus::Done(stdout.trim().to_string())
-                                } else {
-                                    let stderr =
-                                        String::from_utf8_lossy(&output.stderr).to_string();
-                                    TaskStatus::Failed(stderr.trim().to_string())
-                                };
-                            }
-                        }
-                        Err(e) => {
-                            if let Some(task) =
-                                tasks.lock().await.iter_mut().find(|t| t.id == task_id)
-                            {
-                                task.status = TaskStatus::Failed(e.to_string());
-                            }
-                        }
-                    }
-                });
-
-                Ok(format!(
-                    "✅ Scheduled: {}\n  ID: {}\n  Command: {}\n  Delay: {}s",
-                    desc, id, command, delay
-                ))
+                Ok(format!("✅ Scheduled: {}\n  ID: {}\n  Target: {}", desc, id, next_run))
             }
             "list" => {
-                let tasks = self.tasks.lock().await;
-                if tasks.is_empty() {
-                    return Ok("No scheduled tasks.".to_string());
+                let mut stmt = conn.prepare("SELECT id, description, status, next_run, schedule FROM cron_jobs ORDER BY next_run DESC LIMIT 20")
+                    .map_err(|e: rusqlite::Error| zenclaw_core::error::ZenClawError::Other(e.to_string()))?;
+                
+                let rows = stmt.query_map([], |row| {
+                    Ok(format!(
+                        "• {} | {} | {} | next:{} | sched:{}", 
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?.unwrap_or_else(|| "none".into())
+                    ))
+                }).map_err(|e: rusqlite::Error| zenclaw_core::error::ZenClawError::Other(e.to_string()))?;
+
+                let results: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+                if results.is_empty() {
+                    Ok("No tasks in database.".into())
+                } else {
+                    Ok(format!("Scheduled Tasks:\n{}", results.join("\n")))
+                }
+            }
+            "delete" => {
+                let job_id = args["job_id"].as_str().unwrap_or("");
+                if job_id.is_empty() {
+                    return Ok("Error: 'job_id' is required.".into());
                 }
 
-                let list = tasks
-                    .iter()
-                    .map(|t| {
-                        format!(
-                            "• {} — {} ({})",
-                            t.id, t.description, t.status
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let deleted = conn.execute("DELETE FROM cron_jobs WHERE id = ?1", [job_id])
+                    .map_err(|e: rusqlite::Error| zenclaw_core::error::ZenClawError::Other(e.to_string()))?;
 
-                Ok(format!("Scheduled Tasks:\n{}", list))
+                if deleted > 0 {
+                    Ok(format!("✅ Job {} deleted.", job_id))
+                } else {
+                    Ok(format!("❌ Job {} not found.", job_id))
+                }
             }
-            _ => Ok(format!("Unknown action: {}. Use 'schedule' or 'list'.", action)),
+            _ => Ok("Unknown action.".into())
         }
     }
 }
