@@ -429,7 +429,7 @@ impl WebSearchTool {
             .filter_map(|item| {
                 let title = item["title"].as_str()?.to_string();
                 let snippet = item["snippet"].as_str()
-                    .map(|s| strip_html_tags(s))
+                    .map(strip_html_tags)
                     .unwrap_or_default();
                 let page_id = item["pageid"].as_u64()?;
                 let url = format!(
