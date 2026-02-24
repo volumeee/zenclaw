@@ -9,8 +9,8 @@ use zenclaw_core::tool::Tool;
 
 pub struct WebScrapeTool {
     client: Client,
-    max_body_size: usize,
 }
+
 
 impl WebScrapeTool {
     pub fn new() -> Self {
@@ -19,8 +19,6 @@ impl WebScrapeTool {
                 .timeout(std::time::Duration::from_secs(45))
                 .build()
                 .unwrap_or_default(),
-            // Allows parsing large articles (100k chars is around 25-30k tokens usually)
-            max_body_size: 100_000,
         }
     }
 }
@@ -48,17 +46,29 @@ impl Tool for WebScrapeTool {
                 "url": {
                     "type": "string",
                     "description": "The URL to extract content from"
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Maximum characters to return (default: 8000 ≈ 2K tokens). Use higher values only when you need full document (max: 50000)."
                 }
             },
             "required": ["url"]
         })
     }
 
+
     async fn execute(&self, args: Value) -> Result<String> {
         let url = args["url"].as_str().unwrap_or("");
         if url.is_empty() {
             return Ok("Error: No URL provided".into());
         }
+
+        // Respect LLM-requested limit; default 8K chars ≈ 2K tokens — enough for
+        // most factual queries. LLM can request more if explicitly needed.
+        let max_chars = args["max_chars"]
+            .as_u64()
+            .map(|n| n.clamp(500, 50_000) as usize)
+            .unwrap_or(8_000);
 
         // 1. Try Jina Reader API to get clean Markdown
         let target_url = format!("https://r.jina.ai/{}", url);
@@ -73,11 +83,11 @@ impl Tool for WebScrapeTool {
                     tracing::warn!("Jina Reader API failed with status {}. Falling back to local Headless Browser...", status);
                 } else {
                     let body = resp.text().await.unwrap_or_default();
-                    let truncated = if body.len() > self.max_body_size {
+                    let truncated = if body.len() > max_chars {
                         format!(
-                            "{}...\n\n[Content truncated. Original size: {} characters]",
-                            &body[..self.max_body_size],
-                            body.len()
+                            "{}...\n\n[Truncated at {} chars. Full: {} chars. Use max_chars={} for more.]",
+                            &body[..max_chars], max_chars, body.len(),
+                            body.len().min(50_000)
                         )
                     } else {
                         body
@@ -106,15 +116,15 @@ impl Tool for WebScrapeTool {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let body = stdout.to_string();
                 if output.status.success() && !body.is_empty() {
-                    let truncated = if body.len() > self.max_body_size {
+                    let truncated = if body.len() > max_chars {
                         format!(
-                            "{}...\n\n[Content truncated. Original size: {} characters]",
-                            &body[..self.max_body_size],
-                            body.len()
+                            "{}...\n\n[Truncated at {} chars. Full: {} chars.]",
+                            &body[..max_chars], max_chars, body.len()
                         )
                     } else {
                         body
                     };
+
 
                     Ok(format!(
                         "--- EXTRACTED TEXT VIA HEADLESS BROWSER FROM {} ---\n\n{}",

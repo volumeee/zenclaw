@@ -303,7 +303,7 @@ impl WebSearchTool {
 
     /// Jina Search (s.jina.ai) — reliable web search returning clean markdown.
     /// Free without API key, works on most networks.
-    /// Returns structured JSON with title, url, content per result.
+    /// Handles both JSON response and plain-text/markdown fallback.
     async fn jina_search(&self, query: &str, max: usize, lang: &str) -> Vec<SearchResult> {
         // Jina Search supports locale via X-Locale header
         let locale = match lang {
@@ -330,50 +330,60 @@ impl WebSearchTool {
             }
         };
 
+        let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        if text.len() < 50 {
-            tracing::warn!("Jina Search response suspiciously small ({} bytes)", text.len());
+
+        if text.len() < 20 {
+            tracing::warn!("Jina Search empty response (status={}, {} bytes)", status, text.len());
             return vec![];
         }
 
-        let v: Value = match serde_json::from_str(&text) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Jina Search JSON parse failed: {}", e);
-                return vec![];
+        // ── Try JSON parsing first ──────────────────────────────────────────
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            // Try both 'data' and 'results' keys (API may vary)
+            let items_opt = v["data"].as_array()
+                .or_else(|| v["results"].as_array())
+                .or_else(|| v["items"].as_array());
+
+            if let Some(items) = items_opt {
+                tracing::debug!("Jina Search JSON: {} results", items.len());
+                return items.iter().take(max).filter_map(|item| {
+                    let title = item["title"].as_str().unwrap_or("").to_string();
+                    let url = item["url"].as_str().unwrap_or("").to_string();
+                    if url.is_empty() { return None; }
+
+                    let snippet = if let Some(desc) = item["description"].as_str() {
+                        desc.to_string()
+                    } else if let Some(content) = item["content"].as_str() {
+                        let t = content.trim();
+                        if t.len() > 200 { format!("{}...", &t[..200]) } else { t.to_string() }
+                    } else {
+                        String::new()
+                    };
+
+                    Some(SearchResult { title, url, snippet })
+                }).collect();
             }
-        };
 
-        let items = match v["data"].as_array() {
-            Some(a) => a,
-            None => {
-                tracing::warn!("Jina Search: no 'data' array in response");
-                return vec![];
-            }
-        };
+            // JSON parsed but no known array key — log first 300 chars for debugging
+            tracing::warn!(
+                "Jina Search JSON has no 'data'/'results'/'items' key (status={}). Response preview: {}",
+                status,
+                &text[..text.len().min(300)]
+            );
+        }
 
-        items.iter().take(max).filter_map(|item| {
-            let title = item["title"].as_str().unwrap_or("").to_string();
-            let url = item["url"].as_str().unwrap_or("").to_string();
-            if url.is_empty() { return None; }
-
-            // Use 'description' as snippet, fall back to first 200 chars of 'content'
-            let snippet = if let Some(desc) = item["description"].as_str() {
-                desc.to_string()
-            } else if let Some(content) = item["content"].as_str() {
-                let trimmed = content.trim();
-                if trimmed.len() > 200 {
-                    format!("{}...", &trimmed[..200])
-                } else {
-                    trimmed.to_string()
-                }
-            } else {
-                String::new()
-            };
-
-            Some(SearchResult { title, url, snippet })
-        }).collect()
+        // ── Fallback: parse plain-text/markdown response ────────────────────
+        // Jina text format:
+        //   1. [Title](URL)
+        //   Description text...
+        //
+        //   2. [Title](URL)
+        //   ...
+        tracing::info!("Jina Search: falling back to text parser (status={})", status);
+        parse_jina_text(&text, max)
     }
+
 
     /// DDG Lite — simpler HTML format, low block rate on congested/edge IPs.
     async fn ddg_lite(&self, query: &str, max: usize, lang: &str) -> Vec<SearchResult> {
@@ -666,6 +676,80 @@ fn strip_html_tags(s: &str) -> String {
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
 }
+
+/// Parse Jina Search plain-text/markdown response.
+///
+/// Jina text format (when JSON is unavailable or rate-limited):
+/// ```
+/// 1. [Title](https://url)
+/// Description or content snippet...
+///
+/// 2. [Title](https://url)
+/// ...
+/// ```
+fn parse_jina_text(text: &str, max: usize) -> Vec<SearchResult> {
+    let mut results = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() && results.len() < max {
+        let line = lines[i].trim();
+
+        // Match numbered entries: "1." "2." etc, possibly with markdown link
+        let is_numbered = line.starts_with(|c: char| c.is_ascii_digit())
+            && line.contains(". ");
+
+        if is_numbered {
+            // Try to extract [Title](URL) from this line or next non-empty line
+            let search_line = if line.contains("](http") {
+                line
+            } else if i + 1 < lines.len() && lines[i+1].contains("](http") {
+                lines[i+1].trim()
+            } else {
+                i += 1;
+                continue;
+            };
+
+            // Parse markdown link: [Title](URL)
+            if let (Some(title_start), Some(title_end)) = (search_line.find('['), search_line.find("](")) {
+                let title = search_line[title_start + 1..title_end].to_string();
+                let url_start = title_end + 2;
+                if let Some(url_end) = search_line[url_start..].find(')') {
+                    let url = search_line[url_start..url_start + url_end].to_string();
+                    if !url.is_empty() && url.starts_with("http") {
+                        // Collect snippet from subsequent lines until blank or next entry
+                        let mut snippet_lines = Vec::new();
+                        let mut j = i + 1;
+                        while j < lines.len() {
+                            let next = lines[j].trim();
+                            // Stop at blank line after collecting some content,
+                            // or at next numbered entry
+                            if next.is_empty() && !snippet_lines.is_empty() { break; }
+                            if next.starts_with(|c: char| c.is_ascii_digit()) && next.contains(". ") { break; }
+                            if !next.is_empty() && !next.starts_with("](") {
+                                snippet_lines.push(next);
+                            }
+                            j += 1;
+                        }
+                        let snippet = snippet_lines.join(" ");
+                        let snippet = if snippet.len() > 200 {
+                            format!("{}...", &snippet[..200])
+                        } else {
+                            snippet
+                        };
+
+                        results.push(SearchResult { title, url, snippet });
+                    }
+                }
+            }
+        }
+
+        i += 1;
+    }
+
+    results
+}
+
 
 // Keep parse_ddg_html available (used internally — suppress dead_code warning)
 #[allow(dead_code)]
