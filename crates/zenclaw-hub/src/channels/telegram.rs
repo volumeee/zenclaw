@@ -15,6 +15,7 @@ use zenclaw_core::agent::Agent;
 use zenclaw_core::error::{Result, ZenClawError};
 use zenclaw_core::memory::MemoryStore;
 use zenclaw_core::provider::LlmProvider;
+use zenclaw_core::bus::EventBus;
 
 /// Telegram bot configuration.
 #[derive(Debug, Clone)]
@@ -160,8 +161,64 @@ impl TelegramChannel {
                                     }
                                 }
 
-                                // Send typing indicator
-                                let _ = send_typing(&client, &api_base, chat_id).await;
+                                // Send initial thinking message
+                                let mut initial_msg_id = None;
+                                if let Ok(resp) = send_message(
+                                    &client,
+                                    &api_base,
+                                    chat_id,
+                                    "🧠 *Process Started...*",
+                                    Some("Markdown"),
+                                ).await {
+                                    initial_msg_id = resp.result.map(|m| m.message_id);
+                                }
+
+                                let bus = EventBus::new(32);
+                                let mut rx = bus.subscribe_system();
+                                let bg_client = client.clone();
+                                let bg_api_base = api_base.clone();
+                                let msg_id_clone = initial_msg_id;
+                                
+                                let _bg_task = tokio::spawn(async move {
+                                    if let Some(msg_id) = msg_id_clone {
+                                        let mut last_status = String::new();
+                                        while let Ok(event) = rx.recv().await {
+                                            let mut new_status = String::new();
+                                            match event.event_type.as_str() {
+                                                "agent_think" => {
+                                                    let it = event.data["iteration"].as_u64().unwrap_or(0);
+                                                    new_status = format!("🧠 *Thinking...* (iteration {})", it);
+                                                }
+                                                "tool_use" => {
+                                                    if let Some(tool) = event.data["tool"].as_str() {
+                                                        new_status = format!("🛠️ *Using tool:* `{}`", tool);
+                                                    }
+                                                }
+                                                "tool_result" => {
+                                                    if let Some(tool) = event.data["tool"].as_str() {
+                                                        new_status = format!("✅ *Finished tool:* `{}`", tool);
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+
+                                            if !new_status.is_empty() && new_status != last_status {
+                                                last_status = new_status.clone();
+                                                let _ = edit_message(
+                                                    &bg_client,
+                                                    &bg_api_base,
+                                                    chat_id,
+                                                    msg_id,
+                                                    &new_status,
+                                                    Some("Markdown")
+                                                ).await;
+                                                
+                                                // Slight delay to avoid hitting Telegram API rate limits too hard
+                                                tokio::time::sleep(Duration::from_millis(500)).await;
+                                            }
+                                        }
+                                    }
+                                });
 
                                 // Process through agent
                                 match agent.process(
@@ -169,9 +226,14 @@ impl TelegramChannel {
                                     memory.as_ref(),
                                     &text,
                                     &session_key,
-                                    None,
+                                    Some(&bus),
                                 ).await {
                                     Ok(response) => {
+                                        // Once done, delete the "loading" message
+                                        if let Some(msg_id) = initial_msg_id {
+                                            let _ = delete_message(&client, &api_base, chat_id, msg_id).await;
+                                        }
+
                                         info!("📤 [{}] Response: {} chars", chat_id, response.len());
 
                                         // Split long messages (Telegram limit: 4096)
@@ -190,6 +252,10 @@ impl TelegramChannel {
                                         }
                                     }
                                     Err(e) => {
+                                        if let Some(msg_id) = initial_msg_id {
+                                            let _ = delete_message(&client, &api_base, chat_id, msg_id).await;
+                                        }
+
                                         error!("Agent error: {}", e);
                                         let _ = send_message(
                                             &client,
@@ -260,6 +326,7 @@ struct TgUpdate {
 
 #[derive(Debug, Deserialize)]
 struct TgMessage {
+    message_id: i64,
     text: Option<String>,
     chat: TgChat,
     from: Option<TgUser>,
@@ -333,7 +400,7 @@ async fn send_message(
     chat_id: i64,
     text: &str,
     parse_mode: Option<&str>,
-) -> Result<()> {
+) -> Result<TgResponse<TgMessage>> {
     let url = format!("{}/sendMessage", api_base);
     let body = SendMessageBody {
         chat_id,
@@ -342,30 +409,65 @@ async fn send_message(
     };
 
     let resp = client.post(&url).json(&body).send().await?;
+    let resp_json: TgResponse<TgMessage> = resp.json().await.map_err(|e| ZenClawError::Provider(e.to_string()))?;
 
-    if !resp.status().is_success() {
-        // If markdown failed, try plain text
-        if parse_mode.is_some() {
-            debug!("Markdown send failed, retrying as plain text");
-            let plain_body = SendMessageBody {
-                chat_id,
-                text: text.to_string(),
-                parse_mode: None,
-            };
-            client.post(&url).json(&plain_body).send().await?;
-        }
+    // If markdown failed, try plain text
+    if !resp_json.ok && parse_mode.is_some() {
+        debug!("Markdown send failed, retrying as plain text");
+        let plain_body = SendMessageBody {
+            chat_id,
+            text: text.to_string(),
+            parse_mode: None,
+        };
+        let plain_resp = client.post(&url).json(&plain_body).send().await?;
+        let plain_json: TgResponse<TgMessage> = plain_resp.json().await.map_err(|e| ZenClawError::Provider(e.to_string()))?;
+        return Ok(plain_json);
     }
 
+    Ok(resp_json)
+}
+
+#[derive(Debug, Serialize)]
+struct EditMessageBody {
+    chat_id: i64,
+    message_id: i64,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parse_mode: Option<String>,
+}
+
+async fn edit_message(
+    client: &Client,
+    api_base: &str,
+    chat_id: i64,
+    message_id: i64,
+    text: &str,
+    parse_mode: Option<&str>,
+) -> Result<()> {
+    let url = format!("{}/editMessageText", api_base);
+    let body = EditMessageBody {
+        chat_id,
+        message_id,
+        text: text.to_string(),
+        parse_mode: parse_mode.map(String::from),
+    };
+
+    let _ = client.post(&url).json(&body).send().await;
     Ok(())
 }
 
-async fn send_typing(client: &Client, api_base: &str, chat_id: i64) -> Result<()> {
-    let url = format!("{}/sendChatAction", api_base);
+async fn delete_message(
+    client: &Client,
+    api_base: &str,
+    chat_id: i64,
+    message_id: i64,
+) -> Result<()> {
+    let url = format!("{}/deleteMessage", api_base);
     let _ = client
         .post(&url)
         .json(&serde_json::json!({
             "chat_id": chat_id,
-            "action": "typing"
+            "message_id": message_id
         }))
         .send()
         .await;

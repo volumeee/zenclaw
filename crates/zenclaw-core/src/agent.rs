@@ -133,7 +133,25 @@ impl Agent {
                 temperature: self.config.temperature,
             };
 
-            let response: LlmResponse = provider.chat(request).await?;
+            let mut retry_count = 0;
+            let max_retries = 3;
+            let mut backoff_ms = 1000;
+
+            let response: LlmResponse = loop {
+                match provider.chat(request.clone()).await {
+                    Ok(resp) => break resp,
+                    Err(e) => {
+                        if retry_count >= max_retries {
+                            tracing::error!("LLM Provider failed after {} retries: {}", max_retries, e);
+                            return Err(e); // Can't recover
+                        }
+                        tracing::warn!("LLM Error: {}. Retrying in {}ms...", e, backoff_ms);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        retry_count += 1;
+                        backoff_ms *= 2;
+                    }
+                }
+            };
 
             tracing::debug!(
                 "LLM response: finish_reason={}, tool_calls={}, tokens={}",
@@ -152,8 +170,10 @@ impl Agent {
                     tool_calls.clone(),
                 ));
 
-                // Execute each tool call
-                for call in &tool_calls {
+                // Execute each tool call concurrently
+                let mut exec_futures = Vec::new();
+
+                for call in tool_calls {
                     if let Some(b) = bus {
                         b.publish_system(SystemEvent {
                             run_id: session_key.to_string(),
@@ -165,12 +185,20 @@ impl Agent {
                     let args: serde_json::Value =
                         serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
-                    let result = match self.tools.execute(&call.function.name, args).await {
-                        Ok(r) => r,
-                        Err(e) => format!("Error: {}", e),
+                    let fut = async move {
+                        let result = match self.tools.execute(&call.function.name, args).await {
+                            Ok(r) => r,
+                            Err(e) => format!("Error: {}", e),
+                        };
+                        (call, result)
                     };
+                    exec_futures.push(fut);
+                }
 
-                    // Add tool result to messages
+                let results = futures::future::join_all(exec_futures).await;
+
+                // Add tool results to messages
+                for (call, result) in results {
                     messages.push(ChatMessage::tool_result(
                         &call.id,
                         &call.function.name,
