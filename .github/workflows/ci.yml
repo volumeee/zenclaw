@@ -39,6 +39,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             name: zenclaw-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: zenclaw-windows-x86_64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -59,13 +62,18 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
+        shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/zenclaw dist/${{ matrix.name }}
-          chmod +x dist/${{ matrix.name }}
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            cp target/${{ matrix.target }}/release/zenclaw.exe dist/${{ matrix.name }}.exe
+          else
+            cp target/${{ matrix.target }}/release/zenclaw dist/${{ matrix.name }}
+            chmod +x dist/${{ matrix.name }}
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: dist/${{ matrix.name }}
+          path: dist/*
