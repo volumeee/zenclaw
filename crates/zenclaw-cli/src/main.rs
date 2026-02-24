@@ -867,8 +867,7 @@ async fn run_chat(
         let _bg_task = tokio::spawn(async move {
             while let Ok(event) = rx.recv().await {
                 if let Some(msg) = event.format_status() {
-                    // Print the previous status as a completed step, then show new one
-                    sp_clone.println(format!("  {}", msg.dimmed()));
+                    // Only update the spinner in-place to avoid spamming the terminal with double lines
                     sp_clone.set_message(msg);
                 }
             }
