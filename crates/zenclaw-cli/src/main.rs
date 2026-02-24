@@ -878,15 +878,17 @@ async fn run_chat(
                 spinner.finish_and_clear();
                 
                 // Print stylish Markdown output using termimad
-                println!("\n{} ", "AI ›".cyan().bold());
+                print!("\n{} ", "AI ›".cyan().bold());
+                std::io::stdout().flush().unwrap_or(());
                 
                 // Create a clean skin
                 let mut skin = termimad::MadSkin::default();
                 skin.set_headers_fg(termimad::crossterm::style::Color::Cyan);
                 skin.bold.set_fg(termimad::crossterm::style::Color::Yellow);
                 skin.italic.set_fg(termimad::crossterm::style::Color::Green);
+                skin.quote_mark.set_fg(termimad::crossterm::style::Color::DarkGrey);
                 
-                skin.print_text(&response);
+                print!("{}", skin.term_text(response.trim()));
                 println!();
             }
             Err(e) => {
