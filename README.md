@@ -570,7 +570,7 @@ git tag v0.1.0 && git push origin v0.1.0
 
 ## 📜 License
 
-## MIT — Use it however you want. Build amazing things.
+MIT — Use it however you want. Build amazing things.
 
 <p align="center">
   <sub>Built with ❤️ and 🦀 by <a href="https://github.com/volumeee">volumeee</a></sub><br/>
