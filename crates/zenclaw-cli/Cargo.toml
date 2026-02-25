@@ -28,3 +28,6 @@ console = { workspace = true }
 chrono = { workspace = true }
 tracing-appender = "0.2"
 termimad = "0.34.1"
+arboard = "3.6.1"
+regex = "1.12.3"
+rustyline = "17.0.2"

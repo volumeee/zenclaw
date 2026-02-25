@@ -705,6 +705,28 @@ async fn main() -> anyhow::Result<()> {
 
 // ─── Command Handlers ──────────────────────────────────────
 
+fn extract_code_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current_block = String::new();
+    let mut in_block = false;
+
+    for line in text.lines() {
+        if line.starts_with("```") {
+            if in_block {
+                blocks.push(current_block.trim().to_string());
+                current_block.clear();
+                in_block = false;
+            } else {
+                in_block = true;
+            }
+        } else if in_block {
+            current_block.push_str(line);
+            current_block.push('\n');
+        }
+    }
+    blocks
+}
+
 async fn run_chat(
     provider_name: Option<&str>,
     model: Option<&str>,
@@ -763,15 +785,22 @@ async fn run_chat(
     println!();
 
     let session_key = "cli:default";
+    
+    let mut rl = rustyline::DefaultEditor::new()?;
+    let mut last_response = String::new();
+    let mut last_code_blocks: Vec<String> = Vec::new();
 
     loop {
-        print!("{} ", "You ›".green().bold());
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
-            break;
-        }
+        let readline = rl.readline(&format!("{} ", "You ›".green().bold()));
+        
+        let input = match readline {
+            Ok(line) => {
+                let _ = rl.add_history_entry(line.as_str());
+                line
+            },
+            Err(_) => break, // EOF or Ctrl-C handles exit
+        };
+        
         let input = input.trim();
 
         if input.is_empty() {
@@ -835,6 +864,70 @@ async fn run_chat(
                 println!();
                 continue;
             }
+            "/copy" => {
+                let to_copy = if !last_code_blocks.is_empty() {
+                    last_code_blocks.join("\n\n")
+                } else {
+                    last_response.clone()
+                };
+                
+                if to_copy.is_empty() {
+                    println!("  ⚠️  Nothing to copy yet.");
+                    continue;
+                }
+                
+                match arboard::Clipboard::new() {
+                    Ok(mut cb) => {
+                        let _ = cb.set_text(&to_copy);
+                        if !last_code_blocks.is_empty() {
+                            println!("  {} {} code block(s) to clipboard!", "✅ Copied".green(), last_code_blocks.len());
+                        } else {
+                            println!("  {}", "✅ Copied response to clipboard!".green());
+                        }
+                    }
+                    Err(e) => println!("  {} {}", "❌ Clipboard error:".red(), e),
+                }
+                println!();
+                continue;
+            }
+            "/run" => {
+                if last_code_blocks.is_empty() {
+                    println!("  ⚠️  No code blocks found to run.");
+                    continue;
+                }
+                
+                let cmd = last_code_blocks.join("\n");
+                println!("\n{}", "⚠️  WARNING: You are about to execute the following command(s):".red().bold());
+                println!("    {}\n", cmd.replace("\n", "\n    ").cyan());
+                
+                let confirm = dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                    .with_prompt("Do you want to proceed?")
+                    .default(false)
+                    .interact()?;
+                    
+                if confirm {
+                    println!("  {} Executing...\n", "▶️".green());
+                    let status = if cfg!(target_os = "windows") {
+                        std::process::Command::new("cmd")
+                            .args(["/C", &cmd])
+                            .status()
+                    } else {
+                        std::process::Command::new("sh")
+                            .arg("-c")
+                            .arg(&cmd)
+                            .status()
+                    };
+                    
+                    match status {
+                        Ok(st) => if !st.success() { println!("  {} Process exited with error: {}", "❌".red(), st); },
+                        Err(e) => println!("  {} Failed to execute: {}", "❌".red(), e),
+                    }
+                } else {
+                    println!("  {}", "Cancelled.".yellow());
+                }
+                println!();
+                continue;
+            }
             "/help" => {
                 println!("\n{}", "Commands:".bold());
                 println!("  /quit    — Exit");
@@ -842,6 +935,8 @@ async fn run_chat(
                 println!("  /tools   — List registered tools");
                 println!("  /model   — Show current model");
                 println!("  /skills  — List available skills");
+                println!("  /copy    — Copy last response or code block to clipboard");
+                println!("  /run     — Execute last generated code block in terminal");
                 println!("  /help    — Show this help");
                 println!();
                 continue;
@@ -890,6 +985,20 @@ async fn run_chat(
                 
                 print!("{}", skin.term_text(response.trim()));
                 println!();
+                
+                last_response = response.clone();
+                last_code_blocks = extract_code_blocks(&response);
+                
+                if !last_code_blocks.is_empty() {
+                    println!("\n  {} {} {}, or {} {}", 
+                        "💡 Tip: Type".dimmed(), 
+                        "/copy".bold().cyan(), 
+                        "to copy code".dimmed(), 
+                        "/run".bold().cyan(), 
+                        "to execute it".dimmed()
+                    );
+                    println!();
+                }
             }
             Err(e) => {
                 spinner.finish_and_clear();
