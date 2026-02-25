@@ -28,6 +28,9 @@ use zenclaw_hub::tools::{
     ReadFileTool, ShellTool, SubAgentTool, SystemInfoTool, WebFetchTool, WebScrapeTool, WebSearchTool, WriteFileTool,
 };
 
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline_derive::{Completer, Helper, Hinter, Highlighter};
+
 // ─── CLI Definition ────────────────────────────────────────
 
 /// ZenClaw — Build AI the simple way 🦀⚡
@@ -689,6 +692,28 @@ async fn main() -> anyhow::Result<()> {
 
 // ─── Command Handlers ──────────────────────────────────────
 
+#[derive(Completer, Helper, Hinter, Highlighter)]
+struct CliHelper;
+
+impl Validator for CliHelper {
+    fn validate(&self, ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
+        let input = ctx.input();
+        
+        // 1. Check for manual continuation via trailing backslash
+        if input.trim_end().ends_with('\\') {
+            return Ok(ValidationResult::Incomplete);
+        }
+
+        // 2. Check for unclosed markdown code blocks (odd number of ```)
+        let backtick_count = input.split("```").count() - 1;
+        if !backtick_count.is_multiple_of(2) {
+            return Ok(ValidationResult::Incomplete);
+        }
+
+        Ok(ValidationResult::Valid(None))
+    }
+}
+
 fn extract_code_blocks(text: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut current_block = String::new();
@@ -740,7 +765,13 @@ async fn run_chat(
 
     let session_key = "cli:default";
     
-    let mut rl = rustyline::DefaultEditor::new()?;
+    let config = rustyline::Config::builder()
+        .auto_add_history(true)
+        .bracketed_paste(true)
+        .build();
+    let mut rl = rustyline::Editor::with_config(config)?;
+    rl.set_helper(Some(CliHelper));
+    
     let mut last_response = String::new();
     let mut last_code_blocks: Vec<String> = Vec::new();
 
@@ -893,27 +924,35 @@ async fn run_chat(
             }
         });
 
-        match agent.process(&provider, &memory, input, session_key, Some(&bus)).await {
-            Ok(response) => {
-                spinner.finish_and_clear();
+        tokio::select! {
+            res = agent.process(&provider, &memory, input, session_key, Some(&bus)) => {
+                match res {
+                    Ok(response) => {
+                        spinner.finish_and_clear();
 
-                ui::print_ai_prefix();
-                let skin = ui::make_mad_skin();
-                print!("{}", skin.term_text(response.trim()));
-                println!();
+                        ui::print_ai_prefix();
+                        let skin = ui::make_mad_skin();
+                        print!("{}", skin.term_text(response.trim()));
+                        println!();
 
-                last_response = response.clone();
-                last_code_blocks = extract_code_blocks(&response);
+                        last_response = response.clone();
+                        last_code_blocks = extract_code_blocks(&response);
 
-                if !last_code_blocks.is_empty() {
-                    ui::print_code_tip();
+                        if !last_code_blocks.is_empty() {
+                            ui::print_code_tip();
+                        }
+
+                        ui::print_turn_divider();
+                    }
+                    Err(e) => {
+                        spinner.finish_and_clear();
+                        eprintln!("{} {}\n", "Error:".red().bold(), e);
+                    }
                 }
-
-                ui::print_turn_divider();
             }
-            Err(e) => {
+            _ = tokio::signal::ctrl_c() => {
                 spinner.finish_and_clear();
-                eprintln!("{} {}\n", "Error:".red().bold(), e);
+                println!("\n  {} {}", "⛔".red(), "Request cancelled by user.".yellow());
             }
         }
 

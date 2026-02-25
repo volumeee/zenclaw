@@ -30,4 +30,5 @@ tracing-appender = "0.2"
 termimad = "0.34.1"
 arboard = "3.6.1"
 regex = "1.12.3"
-rustyline = "17.0.2"
+rustyline = { version = "17.0.2", features = ["derive"] }
+rustyline-derive = "0.11.1"
