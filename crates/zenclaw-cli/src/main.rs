@@ -592,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
                 print!("\x1B[2J\x1B[1;1H");
                 io::stdout().flush().ok();
 
-    ui::print_banner();
+                ui::print_banner();
 
                 let has_config = ZenClawConfig::default_path().exists();
                 let mut options = vec![
@@ -792,26 +792,10 @@ async fn run_chat(
                 let data = setup::data_dir();
                 let mut skill_mgr = SkillManager::new(&data.join("skills"));
                 let _ = skill_mgr.load_all().await;
-                println!("\n{}", "📚 Available Skills:".bold());
-                for skill in skill_mgr.list() {
-                    let active = if active_skills.contains(&skill.name) {
-                        "✅".to_string()
-                    } else {
-                        "  ".to_string()
-                    };
-                    println!(
-                        "  {} {} — {}",
-                        active,
-                        skill.name.cyan(),
-                        skill.description.dimmed()
-                    );
-                }
-                println!(
-                    "\n  {} {}",
-                    "Tip:".dimmed(),
-                    "Use --skill <name> to activate".dimmed()
-                );
-                println!();
+                let items: Vec<(String, String, bool)> = skill_mgr.list().iter().map(|s| {
+                    (s.name.clone(), s.description.clone(), active_skills.contains(&s.name))
+                }).collect();
+                ui::print_skills_list(&items);
                 continue;
             }
             "/copy" => {
@@ -924,6 +908,8 @@ async fn run_chat(
                 if !last_code_blocks.is_empty() {
                     ui::print_code_tip();
                 }
+
+                ui::print_turn_divider();
             }
             Err(e) => {
                 spinner.finish_and_clear();

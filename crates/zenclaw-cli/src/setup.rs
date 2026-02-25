@@ -1,11 +1,13 @@
 //! Interactive setup wizard — beautiful TUI for configuring ZenClaw.
 
 use colored::*;
-use dialoguer::{theme::ColorfulTheme, Password, Select, Input};
+use dialoguer::{theme::ColorfulTheme, Password, Select, Input, FuzzySelect};
 use std::path::PathBuf;
 
 use zenclaw_core::config::ZenClawConfig;
 use zenclaw_core::provider::ProviderConfig;
+
+use crate::ui;
 
 /// Provider info for the selection menu.
 #[allow(dead_code)]
@@ -122,24 +124,7 @@ const PROVIDERS: &[ProviderInfo] = &[
 pub fn run_setup() -> anyhow::Result<()> {
     let theme = ColorfulTheme::default();
 
-    println!();
-    println!(
-        "{}",
-        "  ╔════════════════════════════════════════╗".cyan()
-    );
-    println!(
-        "{}",
-        "  ║    ⚡ ZenClaw Setup Wizard ⚡          ║".cyan()
-    );
-    println!(
-        "{}",
-        "  ║    Configure your AI in seconds        ║".cyan()
-    );
-    println!(
-        "{}",
-        "  ╚════════════════════════════════════════╝".cyan()
-    );
-    println!();
+    ui::print_setup_banner();
 
     // Step 1: Choose provider
     println!(
@@ -150,9 +135,10 @@ pub fn run_setup() -> anyhow::Result<()> {
     println!();
 
     let provider_names: Vec<&str> = PROVIDERS.iter().map(|p| p.display).collect();
-    let provider_idx = Select::with_theme(&theme)
+    let provider_idx = FuzzySelect::with_theme(&theme)
         .items(&provider_names)
         .default(0)
+        .with_prompt("Search or select")
         .interact()?;
 
     let provider = &PROVIDERS[provider_idx];
@@ -168,7 +154,7 @@ pub fn run_setup() -> anyhow::Result<()> {
             .interact_text()?;
         Some(base)
     } else {
-        provider.api_base.map(|s| s.to_string())
+        provider.api_base.map(|s: &str| s.to_string())
     };
 
     // Step 2: Enter API key (if needed)
@@ -270,30 +256,12 @@ pub fn run_setup() -> anyhow::Result<()> {
     let config_path = ZenClawConfig::default_path();
     config.save(&config_path)?;
 
-    // Success!
-    println!();
-    println!(
-        "{}",
-        "  ╔════════════════════════════════════════╗".green()
+    ui::print_setup_complete(
+        &config_path.display().to_string(),
+        provider.display,
+        &model,
+        api_key.is_some(),
     );
-    println!(
-        "{}",
-        "  ║         ✅ Setup Complete!              ║".green()
-    );
-    println!(
-        "{}",
-        "  ╚════════════════════════════════════════╝".green()
-    );
-    println!();
-    println!("  {} {}", "Config saved:".dimmed(), config_path.display());
-    println!("  {} {}", "Provider:".dimmed(), provider.display.green());
-    println!("  {} {}", "Model:".dimmed(), model.cyan());
-    if api_key.is_some() {
-    println!("  {} {}", "API Key:".dimmed(), "••••••••••••(saved)".green());
-    }
-    println!();
-    println!("  {} Returning to Main Menu...", "🚀 Ready!".green().bold());
-    println!();
 
     Ok(())
 }

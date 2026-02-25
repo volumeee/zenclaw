@@ -1,150 +1,184 @@
 //! ZenClaw CLI — Terminal UI Components
 //!
-//! All visual rendering lives here. `main.rs` calls these functions
-//! and stays clean. No stray `println!` scattered everywhere.
+//! Single source of truth for every visual element.
+//! Changing a colour, border width, or layout is always a one-file edit.
 
-#![allow(dead_code)] // components library — some items are for future use
+#![allow(dead_code)]
 
 use colored::*;
 use std::io::{self, Write};
 
-// ─── Palette ────────────────────────────────────────────────
-// Keep all colour decisions in one place so changing the theme
-// is a single-file edit.
+// ─── Constants ──────────────────────────────────────────────
+/// Standard card inner width (characters between the two border chars).
+const CARD_WIDTH: usize = 50;
 
-/// Brand accent: electric cyan — used for provider names, highlights.
-pub const COLOR_ACCENT: &str = "cyan";
-/// Success / AI speaker colour: bright green.
-pub const COLOR_SUCCESS: &str = "bright green";
-/// Muted labels: dark-grey dimmed text.
-pub const COLOR_DIM: &str = "white"; // will be .dimmed()
+// ─── Low-level Box Drawing ──────────────────────────────────
 
-// ─── Box Drawing Helpers ─────────────────────────────────────
-
-/// Full-width card with a title line.
+/// Rounded card (`╭╮╰╯`) with optional title.
 ///
 /// ```text
-/// ╭── Title ──────────────────────╮
-/// │  line1                        │
-/// │  line2                        │
-/// ╰───────────────────────────────╯
+/// ╭─── Title ────────────────────────────╮
+/// │  line1                               │
+/// │  line2                               │
+/// ╰──────────────────────────────────────╯
 /// ```
 pub fn print_card(title: &str, lines: &[&str], width: usize) {
-    let inner = width - 2; // border chars on each side
+    let inner = width.saturating_sub(2);
 
-    // ── top bar ────────────────────────────────────────────
-    let label = if title.is_empty() {
-        "─".repeat(inner)
+    // ── top ──────────────────────────────────────────
+    let top = if title.is_empty() {
+        format!("╭{}╮", "─".repeat(inner))
     } else {
-        let t = format!(" {} ", title);
-        let dashes = inner.saturating_sub(t.chars().count() + 2);
-        format!("─ {}{}", t, "─".repeat(dashes))
+        let label = format!(" {} ", title);
+        let remaining = inner.saturating_sub(label.chars().count() + 1);
+        format!("╭─{}{}╮", label, "─".repeat(remaining))
     };
-    println!("{}", format!("╭{}╮", label).cyan());
+    println!("{}", top.cyan());
 
-    // ── body ───────────────────────────────────────────────
+    // ── body ─────────────────────────────────────────
     for line in lines {
-        let line_chars = strip_ansi_len(line);
-        let padding = inner.saturating_sub(line_chars + 2);
-        println!(
-            "{}  {}{}{}",
-            "│".cyan(),
-            line,
-            " ".repeat(padding),
-            "│".cyan()
-        );
+        let visible = strip_ansi_len(line);
+        let pad = inner.saturating_sub(visible + 2);
+        println!("{}  {}{}{}", "│".cyan(), line, " ".repeat(pad), "│".cyan());
     }
 
-    // ── bottom bar ────────────────────────────────────────
+    // ── bottom ───────────────────────────────────────
     println!("{}", format!("╰{}╯", "─".repeat(inner)).cyan());
 }
 
-/// Minimal inline badge  `[label]` coloured accent.
+/// Double-line card (`╔╗╚╝`) for hero banners.
+fn print_hero(lines: &[&str], width: usize, color: fn(&str) -> ColoredString) {
+    let inner = width.saturating_sub(2);
+    println!("{}", color(&format!("╔{}╗", "═".repeat(inner))));
+    for line in lines {
+        let visible = strip_ansi_len(line);
+        let pad = inner.saturating_sub(visible + 2);
+        println!("{}  {}{}{}", color("║"), line, " ".repeat(pad), color("║"));
+    }
+    println!("{}", color(&format!("╚{}╝", "═".repeat(inner))));
+}
+
+/// Inline badge `[label]`.
 pub fn badge(label: &str) -> ColoredString {
     format!("[{}]", label).cyan().bold()
 }
 
-// ─── Banner ──────────────────────────────────────────────────
+// ─── Banner ─────────────────────────────────────────────────
 
-/// The big intro card printed at startup / menu return.
+/// Main app banner used everywhere: menu, chat, telegram, etc.
 pub fn print_banner() {
-    let version = env!("CARGO_PKG_VERSION");
-
-    // gradient-style separator using block characters
-    let bar = "▓▓▓▒▒▒░░░ ZenClaw ░░░▒▒▒▓▓▓";
-
+    let v = env!("CARGO_PKG_VERSION");
     println!();
-    println!("{}", "  ╔════════════════════════════════════════════╗".cyan());
-    println!(
-        "{}",
-        format!(
-            "  ║  ⚡ ZenClaw v{:<29}⚡  ║",
-            format!("{} ", version)
-        )
-        .cyan()
-        .bold()
+    print_hero(
+        &[
+            &format!("⚡ {} ⚡", format!("ZenClaw v{}", v).bold()),
+            "Build AI the simple way  🦀",
+            &"▓▓▒▒░░░░░░░░░░░░░░░░░░░░░░░░░▒▒▓▓".dimmed().to_string(),
+        ],
+        CARD_WIDTH,
+        |s| s.cyan(),
     );
-    println!("{}", "  ║     Build AI the simple way  🦀           ║".cyan());
-    println!("{}", format!("  ║  {}  ║", bar).cyan().dimmed());
-    println!("{}", "  ╚════════════════════════════════════════════╝".cyan());
     println!();
 }
 
-// ─── Session Info Card ───────────────────────────────────────
+/// Setup wizard banner — same width, green accent.
+pub fn print_setup_banner() {
+    println!();
+    print_hero(
+        &[
+            &format!("⚡ {} ⚡", "ZenClaw Setup Wizard".bold()),
+            "Configure your AI in seconds",
+        ],
+        CARD_WIDTH,
+        |s| s.cyan(),
+    );
+    println!();
+}
 
-/// Printed at the start of `zenclaw chat`.
+/// Success card after setup completes.
+pub fn print_setup_complete(config_path: &str, provider: &str, model: &str, has_key: bool) {
+    println!();
+    print_hero(
+        &[&format!("{}", "✅ Setup Complete!".bold())],
+        CARD_WIDTH,
+        |s| s.green(),
+    );
+    println!();
+    // details below the card
+    println!("  {} {}", "Config:".dimmed(), config_path.dimmed());
+    println!("  {} {}", "Provider:".dimmed(), provider.green());
+    println!("  {} {}", "Model:".dimmed(), model.cyan());
+    if has_key {
+        println!("  {} {}", "API Key:".dimmed(), "••••••••••••(saved)".green());
+    }
+    println!();
+    println!("  {} {}", "🚀".green(), "Ready! Returning to Main Menu...".green().bold());
+    println!();
+}
+
+// ─── Session Info ───────────────────────────────────────────
+
+/// Compact info card at the start of `zenclaw chat`.
 pub fn print_session_info(
     provider: &str,
     model: &str,
     tools_count: usize,
     skills: &[String],
 ) {
-    println!(
-        "  {} {} {}  {} {} {}  {} {}",
-        "Provider".dimmed(),
-        "›".dimmed(),
-        provider.green().bold(),
-        "│".dimmed(),
-        "Model".dimmed(),
-        "›".dimmed(),
-        model.cyan().bold(),
-        badge(&format!("tools:{}", tools_count)),
-    );
+    print_banner();
 
-    if !skills.is_empty() {
-        println!(
-            "  {} {} {}",
-            "Skills".dimmed(),
-            "›".dimmed(),
-            skills.join(", ").yellow()
-        );
-    }
+    let tools_badge = badge(&format!("{} tools", tools_count));
+    let memory_badge = badge("SQLite");
 
-    println!(
-        "  {}",
-        "Memory: SQLite  │  History: up/down arrow  │  /help for commands"
-            .dimmed()
+    print_card(
+        "Session",
+        &[
+            &format!(
+                "{} {} {}  {}  {} {} {}",
+                "Provider".dimmed(),
+                "›".dimmed(),
+                provider.green().bold(),
+                "│".dimmed(),
+                "Model".dimmed(),
+                "›".dimmed(),
+                model.cyan().bold()
+            ),
+            &format!(
+                "{}  {}  {}",
+                tools_badge,
+                memory_badge,
+                if skills.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} {}", "Skills:".dimmed(), skills.join(", ").yellow())
+                }
+            ),
+            &format!(
+                "{}",
+                "↑↓ history  │  /help for commands".dimmed()
+            ),
+        ],
+        CARD_WIDTH,
     );
     println!();
 }
 
-// ─── Chat Bubbles ────────────────────────────────────────────
+// ─── Chat Bubbles ───────────────────────────────────────────
 
-/// Print the AI response prefix — `AI › ` — then flush so the
-/// `termimad` output follows on the same first line.
+/// Print the AI label then flush so markdown follows inline.
 pub fn print_ai_prefix() {
     print!("\n{} ", "AI ›".bright_cyan().bold());
     io::stdout().flush().unwrap_or(());
 }
 
-/// Print a short separator after each AI turn.
+/// Thin separator between chat turns.
 pub fn print_turn_divider() {
-    println!("{}", "  ─────────────────────────────────────".dimmed());
+    println!("{}", format!("  {}", "─".repeat(CARD_WIDTH - 4)).dimmed());
 }
 
-// ─── Command Hint after Code Block ───────────────────────────
+// ─── Code Tip ───────────────────────────────────────────────
 
-/// Printed when the AI returns at least one fenced code block.
+/// Hint shown when the AI reply contains fenced code blocks.
 pub fn print_code_tip() {
     println!(
         "\n  {} {} {} {} {}",
@@ -152,69 +186,115 @@ pub fn print_code_tip() {
         "/copy".bold().cyan(),
         "copies code,".dimmed(),
         "/run".bold().cyan(),
-        "executes it directly in your terminal.".dimmed()
+        "executes it in your terminal.".dimmed()
     );
     println!();
 }
 
-// ─── Help Table ──────────────────────────────────────────────
+// ─── Help ───────────────────────────────────────────────────
 
-/// Pretty-printed command reference.
+/// Pretty command reference table.
 pub fn print_help() {
     let cmds: &[(&str, &str)] = &[
-        ("/quit", "Exit ZenClaw"),
-        ("/clear", "Clear conversation history"),
-        ("/tools", "List all registered tools"),
-        ("/model", "Switch AI provider or model on the fly"),
+        ("/quit",   "Exit ZenClaw"),
+        ("/clear",  "Clear conversation history"),
+        ("/tools",  "List all registered tools"),
+        ("/model",  "Switch AI provider / model on the fly"),
         ("/skills", "List available skill packs"),
-        ("/copy", "Copy last code block (or whole reply) to clipboard"),
-        ("/run", "Execute last code block in a sub-shell"),
-        ("/help", "Show this command reference"),
+        ("/copy",   "Copy last code block to clipboard"),
+        ("/run",    "Execute last code block in a sub-shell"),
+        ("/help",   "Show this command reference"),
     ];
 
+    let w = CARD_WIDTH;
+    let inner = w - 2;
     println!();
-    println!("{}", "  Commands ─────────────────────────────────────".cyan());
+    println!("{}", format!("╭─ {} {}╮", "Commands".bold(), "─".repeat(inner.saturating_sub(13))).cyan());
     for (cmd, desc) in cmds {
-        println!(
-            "  {:12} {}  {}",
-            cmd.bold().cyan(),
-            "│".dimmed(),
-            desc.dimmed()
-        );
+        let content = format!("  {:10} {}  {}", cmd.bold().cyan(), "│".dimmed(), desc.dimmed());
+        let visible = strip_ansi_len(&content);
+        let pad = inner.saturating_sub(visible);
+        println!("{}{}{}{}",  "│".cyan(), content, " ".repeat(pad), "│".cyan());
     }
-    println!("{}", "  ──────────────────────────────────────────────".cyan());
+    println!("{}", format!("╰{}╯", "─".repeat(inner)).cyan());
     println!();
 }
 
-// ─── Model / Provider Status ─────────────────────────────────
+// ─── Model Status ───────────────────────────────────────────
 
-/// One-liner status after `/model`.
 pub fn print_model_status(provider: &str, model: &str) {
+    print_card(
+        "Current Model",
+        &[
+            &format!(
+                "{} {}  {}  {}",
+                "Provider ›".dimmed(),
+                provider.green().bold(),
+                "│".dimmed(),
+                model.cyan().bold()
+            ),
+        ],
+        CARD_WIDTH,
+    );
+}
+
+// ─── Tools List ─────────────────────────────────────────────
+
+pub fn print_tools_list(names: impl Iterator<Item = String>) {
+    let items: Vec<String> = names.collect();
+    let lines: Vec<&str> = items.iter().map(|s| s.as_str()).collect();
+
+    let inner = CARD_WIDTH - 2;
+    println!();
+    println!("{}", format!("╭─ {} {}╮", "🔧 Tools".bold(), "─".repeat(inner.saturating_sub(13))).cyan());
+    for name in &lines {
+        let content = format!("  {} {}", "•".dimmed(), name.cyan());
+        let visible = strip_ansi_len(&content);
+        let pad = inner.saturating_sub(visible);
+        println!("{}{}{}{}", "│".cyan(), content, " ".repeat(pad), "│".cyan());
+    }
+    println!("{}", format!("╰{}╯", "─".repeat(inner)).cyan());
+    println!();
+}
+
+// ─── Skills List ────────────────────────────────────────────
+
+pub fn print_skills_list(skills: &[(String, String, bool)]) {
+    let inner = CARD_WIDTH - 2;
+    println!();
+    println!("{}", format!("╭─ {} {}╮", "📚 Skills".bold(), "─".repeat(inner.saturating_sub(14))).cyan());
+    for (name, desc, active) in skills {
+        let marker = if *active { "✅" } else { "  " };
+        let content = format!("  {} {} — {}", marker, name.cyan(), desc.dimmed());
+        let visible = strip_ansi_len(&content);
+        let pad = inner.saturating_sub(visible);
+        println!("{}{}{}{}", "│".cyan(), content, " ".repeat(pad), "│".cyan());
+    }
+    println!("{}", format!("╰{}╯", "─".repeat(inner)).cyan());
     println!(
-        "\n  {} {} {} {} {}",
-        "Provider".dimmed(),
-        "›".dimmed(),
-        provider.green().bold(),
-        "│".dimmed(),
-        model.cyan().bold()
+        "  {} {}",
+        "Tip:".dimmed(),
+        "Use --skill <name> to activate".dimmed()
     );
     println!();
 }
 
-// ─── Tools List ──────────────────────────────────────────────
+// ─── Markdown Skin ──────────────────────────────────────────
 
-pub fn print_tools_list(names: impl Iterator<Item = String>) {
-    println!("\n{}", "  🔧 Registered Tools ───────────────────────".cyan());
-    for name in names {
-        println!("     {} {}", "•".dimmed(), name.cyan());
-    }
-    println!();
+/// Centralized `termimad` skin — all Markdown styles in one place.
+pub fn make_mad_skin() -> termimad::MadSkin {
+    let mut skin = termimad::MadSkin::default();
+    skin.set_headers_fg(termimad::crossterm::style::Color::Cyan);
+    skin.bold.set_fg(termimad::crossterm::style::Color::Yellow);
+    skin.italic.set_fg(termimad::crossterm::style::Color::Green);
+    skin.quote_mark.set_fg(termimad::crossterm::style::Color::DarkGrey);
+    skin.inline_code.set_fg(termimad::crossterm::style::Color::Magenta);
+    skin
 }
 
-// ─── Utility ─────────────────────────────────────────────────
+// ─── Utility ────────────────────────────────────────────────
 
-/// Approximate visible character width ignoring ANSI sequences.
-/// We walk the string and skip `ESC[…m` escape runs.
+/// Approximate visible character width ignoring ANSI escape sequences.
 fn strip_ansi_len(s: &str) -> usize {
     let mut count = 0;
     let mut in_escape = false;
@@ -230,15 +310,4 @@ fn strip_ansi_len(s: &str) -> usize {
         }
     }
     count
-}
-
-/// Build the `termimad` skin used for Markdown rendering.
-pub fn make_mad_skin() -> termimad::MadSkin {
-    let mut skin = termimad::MadSkin::default();
-    skin.set_headers_fg(termimad::crossterm::style::Color::Cyan);
-    skin.bold.set_fg(termimad::crossterm::style::Color::Yellow);
-    skin.italic.set_fg(termimad::crossterm::style::Color::Green);
-    skin.quote_mark.set_fg(termimad::crossterm::style::Color::DarkGrey);
-    skin.inline_code.set_fg(termimad::crossterm::style::Color::Magenta);
-    skin
 }
