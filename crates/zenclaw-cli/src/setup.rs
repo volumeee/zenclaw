@@ -1,7 +1,7 @@
 //! Interactive setup wizard — beautiful TUI for configuring ZenClaw.
 
 use colored::*;
-use dialoguer::{theme::ColorfulTheme, Password, Select};
+use dialoguer::{theme::ColorfulTheme, Password, Select, Input};
 use std::path::PathBuf;
 
 use zenclaw_core::config::ZenClawConfig;
@@ -107,6 +107,15 @@ const PROVIDERS: &[ProviderInfo] = &[
         api_base: Some("http://localhost:1234/v1"),
         needs_key: false,
     },
+    ProviderInfo {
+        name: "custom",
+        display: "🌍 Custom API Endpoint (OpenAI Compatible)",
+        models: &["(custom-model)"],
+        default_model: "custom-model",
+        env_var: "CUSTOM_API_KEY",
+        api_base: Some("http://localhost:8045/v1"),
+        needs_key: true,
+    },
 ];
 
 /// Run the interactive setup wizard.
@@ -150,6 +159,18 @@ pub fn run_setup() -> anyhow::Result<()> {
     println!();
     println!("  {} {}", "Selected:".dimmed(), provider.display.green());
 
+    let final_api_base = if provider.name == "custom" {
+        println!();
+        println!("  {} {}", "Step 2".green().bold(), "Custom API Base URL:".bold());
+        let base: String = Input::with_theme(&theme)
+            .with_prompt("  API Base")
+            .default(provider.api_base.unwrap_or("http://localhost:8045/v1").to_string())
+            .interact_text()?;
+        Some(base)
+    } else {
+        provider.api_base.map(|s| s.to_string())
+    };
+
     // Step 2: Enter API key (if needed)
     let api_key = if provider.needs_key {
         println!();
@@ -167,7 +188,7 @@ pub fn run_setup() -> anyhow::Result<()> {
                     "gemini" => "https://aistudio.google.com/apikey",
                     "groq" => "https://console.groq.com/keys",
                     "openrouter" => "https://openrouter.ai/keys",
-
+                    "custom" => "your custom provider's dashboard (leave blank if local)",
                     _ => "your provider's website",
                 }
             )
@@ -176,7 +197,7 @@ pub fn run_setup() -> anyhow::Result<()> {
         println!();
 
         let key: String = Password::with_theme(&theme)
-            .with_prompt("  API Key")
+            .with_prompt("  API Key (Press Enter if none)")
             .interact()?;
 
         if key.trim().is_empty() {
@@ -208,12 +229,20 @@ pub fn run_setup() -> anyhow::Result<()> {
     );
     println!();
 
-    let model_idx = Select::with_theme(&theme)
-        .items(provider.models)
-        .default(0)
-        .interact()?;
-
-    let model = provider.models[model_idx];
+    let model = if provider.name == "custom" {
+        let m: String = Input::with_theme(&theme)
+            .with_prompt("  Custom Model Name")
+            .default("custom-model".to_string())
+            .interact_text()?;
+        m
+    } else {
+        let model_idx = Select::with_theme(&theme)
+            .items(provider.models)
+            .default(0)
+            .interact()?;
+        provider.models[model_idx].to_string()
+    };
+    
     println!();
     println!("  {} {}", "Selected:".dimmed(), model.green());
 
@@ -233,7 +262,7 @@ pub fn run_setup() -> anyhow::Result<()> {
         provider: provider.name.to_string(),
         model: model.to_string(),
         api_key: final_api_key,
-        api_base: provider.api_base.map(|s| s.to_string()),
+        api_base: final_api_base,
         ..Default::default()
     };
 
@@ -473,24 +502,38 @@ pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<Str
 
     let provider = &PROVIDERS[provider_idx];
 
-    let mut model_names: Vec<String> = provider.models.iter().map(|m| m.to_string()).collect();
-    model_names.push("❌ Cancel".to_string());
-
-    let model_idx = Select::with_theme(&theme)
-        .with_prompt(format!("Select {} model", provider.name.green()))
-        .items(&model_names)
-        .default(0)
-        .interact_opt()?;
-        
-    let model_idx = match model_idx {
-        Some(idx) if idx < provider.models.len() => idx,
-        _ => {
-            println!("  {}", "Cancelled.".yellow());
-            return Ok(None);
-        }
-    };
+    let (final_api_base, model) = if provider.name == "custom" {
+        let base: String = Input::with_theme(&theme)
+            .with_prompt("Custom API Base URL")
+            .default(config.provider.api_base.clone().unwrap_or_else(|| "http://localhost:8045/v1".to_string()))
+            .interact_text()?;
+            
+        let m: String = Input::with_theme(&theme)
+            .with_prompt("Custom Model Name")
+            .default(if config.provider.provider == "custom" { config.provider.model.clone() } else { "custom-model".to_string() })
+            .interact_text()?;
+            
+        (Some(base), m)
+    } else {
+        let mut model_names: Vec<String> = provider.models.iter().map(|m| m.to_string()).collect();
+        model_names.push("❌ Cancel".to_string());
     
-    let model = provider.models[model_idx];
+        let model_idx = Select::with_theme(&theme)
+            .with_prompt(format!("Select {} model", provider.name.green()))
+            .items(&model_names)
+            .default(0)
+            .interact_opt()?;
+            
+        let model_idx = match model_idx {
+            Some(idx) if idx < provider.models.len() => idx,
+            _ => {
+                println!("  {}", "Cancelled.".yellow());
+                return Ok(None);
+            }
+        };
+        
+        (provider.api_base.map(|s| s.to_string()), provider.models[model_idx].to_string())
+    };
 
     // Check API Key
     let final_api_key = if provider.needs_key {
@@ -510,19 +553,25 @@ pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<Str
                         "gemini" => "https://aistudio.google.com/apikey",
                         "groq" => "https://console.groq.com/keys",
                         "openrouter" => "https://openrouter.ai/keys",
+                        "custom" => "your custom provider (leave blank if local endpoint)",
                         _ => "your provider's website",
                      }).dimmed());
             println!();
             
             let key: String = Password::with_theme(&theme)
-                .with_prompt("  Enter API Key")
+                .with_prompt("  Enter API Key (Press Enter to skip)")
                 .interact()?;
             
             if key.trim().is_empty() {
-                println!("  {}", "❌ Setup cancelled. Key is required.".red());
-                return Ok(None);
+                if provider.name == "custom" {
+                    None
+                } else {
+                    println!("  {}", "❌ Setup cancelled. Key is usually required for this provider.".red());
+                    return Ok(None);
+                }
+            } else {
+                Some(key.trim().to_string())
             }
-            Some(key.trim().to_string())
         }
     } else {
         None
@@ -533,7 +582,7 @@ pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<Str
         provider: provider.name.to_string(),
         model: model.to_string(),
         api_key: final_api_key.clone(),
-        api_base: provider.api_base.map(|s| s.to_string()),
+        api_base: final_api_base.clone(),
         ..Default::default()
     };
 
@@ -547,6 +596,6 @@ pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<Str
         provider.name.to_string(), 
         model.to_string(), 
         final_api_key, 
-        provider.api_base.map(|s| s.to_string())
+        final_api_base
     )))
 }
