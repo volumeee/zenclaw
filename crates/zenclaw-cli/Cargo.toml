@@ -32,3 +32,6 @@ arboard = "3.6.1"
 regex = "1.12.3"
 rustyline = { version = "17.0.2", features = ["derive"] }
 rustyline-derive = "0.11.1"
+ratatui = "0.29.0"
+crossterm = "0.28.1"
+tui-textarea = "0.7.0"

@@ -1,7 +1,7 @@
 //! Interactive setup wizard — beautiful TUI for configuring ZenClaw.
 
 use colored::*;
-use dialoguer::{theme::ColorfulTheme, Password, Select, Input, FuzzySelect};
+use dialoguer::{theme::ColorfulTheme, Password, Input};
 use std::path::PathBuf;
 
 use zenclaw_core::config::ZenClawConfig;
@@ -123,145 +123,181 @@ const PROVIDERS: &[ProviderInfo] = &[
 /// Run the interactive setup wizard.
 pub fn run_setup() -> anyhow::Result<()> {
     let theme = ColorfulTheme::default();
-
     ui::print_setup_banner();
 
-    // Step 1: Choose provider
-    println!(
-        "  {} {}",
-        "Step 1/3".green().bold(),
-        "Choose your AI provider:".bold()
-    );
-    println!();
-
-    let provider_names: Vec<&str> = PROVIDERS.iter().map(|p| p.display).collect();
-    let provider_idx = FuzzySelect::with_theme(&theme)
-        .items(&provider_names)
-        .default(0)
-        .with_prompt("Search or select")
-        .interact()?;
-
-    let provider = &PROVIDERS[provider_idx];
-    println!();
-    println!("  {} {}", "Selected:".dimmed(), provider.display.green());
-
-    let final_api_base = if provider.name == "custom" {
-        println!();
-        println!("  {} {}", "Step 2".green().bold(), "Custom API Base URL:".bold());
-        let base: String = Input::with_theme(&theme)
-            .with_prompt("  API Base")
-            .default(provider.api_base.unwrap_or("http://localhost:8045/v1").to_string())
-            .interact_text()?;
-        Some(base)
-    } else {
-        provider.api_base.map(|s: &str| s.to_string())
-    };
-
-    // Step 2: Enter API key (if needed)
-    let api_key = if provider.needs_key {
-        println!();
+    loop {
+        // Step 1: Choose provider
         println!(
             "  {} {}",
-            "Step 2/3".green().bold(),
-            format!("Enter your {} API key:", provider.name).bold()
-        );
-        println!(
-            "  {}",
-            format!(
-                "Get one at: {}",
-                match provider.name {
-                    "openai" => "https://platform.openai.com/api-keys",
-                    "gemini" => "https://aistudio.google.com/apikey",
-                    "groq" => "https://console.groq.com/keys",
-                    "openrouter" => "https://openrouter.ai/keys",
-                    "custom" => "your custom provider's dashboard (leave blank if local)",
-                    _ => "your provider's website",
-                }
-            )
-            .dimmed()
+            "Step 1/3".green().bold(),
+            "Choose your AI provider:".bold()
         );
         println!();
 
-        let key: String = Password::with_theme(&theme)
-            .with_prompt("  API Key (Press Enter if none)")
-            .interact()?;
+        let mut provider_items = vec![];
+        for (i, p) in PROVIDERS.iter().enumerate() {
+            provider_items.push(crate::tui_menu::MenuItem {
+                label: p.display.to_string(),
+                description: format!("Provider: {}\nModels: {}", p.name, p.models.join(", ")),
+                action_key: i.to_string(),
+            });
+        }
+        provider_items.push(crate::tui_menu::MenuItem {
+            label: "❌ Cancel".to_string(),
+            description: "Go back to main menu.".to_string(),
+            action_key: "cancel".to_string(),
+        });
 
-        if key.trim().is_empty() {
+        let provider_idx_str = crate::tui_menu::run_tui_menu("🔍 Step 1: Choose Provider", &provider_items, 0)?;
+        let action = provider_idx_str.unwrap_or_else(|| "cancel".to_string());
+        if action == "cancel" {
+            println!("  {}", "Setup Cancelled.".yellow());
+            return Ok(());
+        }
+
+        let provider_idx = action.parse::<usize>().unwrap_or(0);
+        let provider = &PROVIDERS[provider_idx];
+        println!();
+        println!("  {} {}", "Selected:".dimmed(), provider.display.green());
+
+        let final_api_base = if provider.name == "custom" {
+            println!();
+            println!("  {} {}", "Step 2".green().bold(), "Custom API Base URL:".bold());
+            let base: String = Input::with_theme(&theme)
+                .with_prompt("  API Base")
+                .default(provider.api_base.unwrap_or("http://localhost:8045/v1").to_string())
+                .interact_text()?;
+            Some(base)
+        } else {
+            provider.api_base.map(|s: &str| s.to_string())
+        };
+
+        // Step 2: Enter API key (if needed)
+        let api_key = if provider.needs_key {
+            println!();
+            println!(
+                "  {} {}",
+                "Step 2/3".green().bold(),
+                format!("Enter your {} API key:", provider.name).bold()
+            );
             println!(
                 "  {}",
-                "⚠️  No key entered. You can set it later with `zenclaw config set api_key <KEY>`"
-                    .yellow()
+                format!(
+                    "Get one at: {}",
+                    match provider.name {
+                        "openai" => "https://platform.openai.com/api-keys",
+                        "gemini" => "https://aistudio.google.com/apikey",
+                        "groq" => "https://console.groq.com/keys",
+                        "openrouter" => "https://openrouter.ai/keys",
+                        "custom" => "your custom provider's dashboard (leave blank if local)",
+                        _ => "your provider's website",
+                    }
+                )
+                .dimmed()
+            );
+            println!();
+
+            let key: String = Password::with_theme(&theme)
+                .with_prompt("  API Key (Press Enter if none)")
+                .interact()?;
+
+            if key.trim().is_empty() {
+                println!(
+                    "  {}",
+                    "⚠️  No key entered. You can set it later with `zenclaw config set api_key <KEY>`"
+                        .yellow()
+                );
+                None
+            } else {
+                Some(key.trim().to_string())
+            }
+        } else {
+            println!();
+            println!(
+                "  {} {}",
+                "Step 2/3".green().bold(),
+                "No API key needed! (local provider)".bold()
             );
             None
-        } else {
-            Some(key.trim().to_string())
-        }
-    } else {
+        };
+
+        // Step 3: Choose model
         println!();
         println!(
             "  {} {}",
-            "Step 2/3".green().bold(),
-            "No API key needed! (local provider)".bold()
+            "Step 3/3".green().bold(),
+            "Choose your default model:".bold()
         );
-        None
-    };
+        println!();
 
-    // Step 3: Choose model
-    println!();
-    println!(
-        "  {} {}",
-        "Step 3/3".green().bold(),
-        "Choose your default model:".bold()
-    );
-    println!();
+        let model = if provider.name == "custom" {
+            let m: String = Input::with_theme(&theme)
+                .with_prompt("  Custom Model Name")
+                .default("custom-model".to_string())
+                .interact_text()?;
+            m
+        } else {
+            let mut model_items = vec![];
+            for (i, m) in provider.models.iter().enumerate() {
+                model_items.push(crate::tui_menu::MenuItem {
+                    label: m.to_string(),
+                    description: format!("Select model '{}'", m),
+                    action_key: i.to_string(),
+                });
+            }
+            model_items.push(crate::tui_menu::MenuItem {
+                label: "⬅️ Back".to_string(),
+                description: "Return to Step 1".to_string(),
+                action_key: "back".to_string(),
+            });
+            
+            let model_idx_str = crate::tui_menu::run_tui_menu("🤖 Step 3: Choose Model", &model_items, 0)?;
+            let m_action = model_idx_str.unwrap_or_else(|| "cancel".to_string());
+            if m_action == "back" {
+                continue; // Back to step 1
+            } else if m_action == "cancel" {
+                println!("  {}", "Setup Cancelled.".yellow());
+                return Ok(());
+            }
+            let model_idx = m_action.parse::<usize>().unwrap_or(0);
+            provider.models[model_idx].to_string()
+        };
+        
+        println!();
+        println!("  {} {}", "Selected:".dimmed(), model.green());
 
-    let model = if provider.name == "custom" {
-        let m: String = Input::with_theme(&theme)
-            .with_prompt("  Custom Model Name")
-            .default("custom-model".to_string())
-            .interact_text()?;
-        m
-    } else {
-        let model_idx = Select::with_theme(&theme)
-            .items(provider.models)
-            .default(0)
-            .interact()?;
-        provider.models[model_idx].to_string()
-    };
-    
-    println!();
-    println!("  {} {}", "Selected:".dimmed(), model.green());
+        // Load existing config so we don't wipe out other settings (like telegram tokens, system prompt)
+        let mut config = load_saved_config().unwrap_or_default();
 
-    // Load existing config so we don't wipe out other settings (like telegram tokens, system prompt)
-    let mut config = load_saved_config().unwrap_or_default();
+        // If the user didn't enter a new key, but selected the same provider they already had,
+        // we preserve their old API key. Otherwise, we overwrite it (or set to None).
+        let final_api_key = if api_key.is_none() && config.provider.provider == provider.name {
+            config.provider.api_key.clone()
+        } else {
+            api_key.clone()
+        };
 
-    // If the user didn't enter a new key, but selected the same provider they already had,
-    // we preserve their old API key. Otherwise, we overwrite it (or set to None).
-    let final_api_key = if api_key.is_none() && config.provider.provider == provider.name {
-        config.provider.api_key.clone()
-    } else {
-        api_key.clone()
-    };
+        // Update only the provider section
+        config.provider = ProviderConfig {
+            provider: provider.name.to_string(),
+            model: model.to_string(),
+            api_key: final_api_key,
+            api_base: final_api_base,
+            ..Default::default()
+        };
 
-    // Update only the provider section
-    config.provider = ProviderConfig {
-        provider: provider.name.to_string(),
-        model: model.to_string(),
-        api_key: final_api_key,
-        api_base: final_api_base,
-        ..Default::default()
-    };
+        let config_path = ZenClawConfig::default_path();
+        config.save(&config_path)?;
 
-
-    let config_path = ZenClawConfig::default_path();
-    config.save(&config_path)?;
-
-    ui::print_setup_complete(
-        &config_path.display().to_string(),
-        provider.display,
-        &model,
-        api_key.is_some(),
-    );
+        ui::print_setup_complete(
+            &config_path.display().to_string(),
+            provider.display,
+            &model,
+            api_key.is_some(),
+        );
+        
+        break;
+    }
 
     Ok(())
 }
@@ -446,124 +482,139 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Run an interactive model switcher and return the selected provider configurations if completing smoothly.
-#[allow(clippy::type_complexity)]
 pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<String>, Option<String>)>> {
     let theme = ColorfulTheme::default();
     let mut config = load_saved_config().unwrap_or_default();
 
-    println!();
-    let provider_names: Vec<String> = PROVIDERS.iter().map(|p| p.display.to_string()).chain(vec!["❌ Cancel".to_string()]).collect();
-    
-    let provider_idx = Select::with_theme(&theme)
-        .with_prompt("Select a Provider")
-        .items(&provider_names)
-        .default(0)
-        .interact_opt()?;
-
-    let provider_idx = match provider_idx {
-        Some(idx) if idx < PROVIDERS.len() => idx,
-        _ => {
+    loop {
+        println!();
+        let mut provider_items = vec![];
+        for (i, p) in PROVIDERS.iter().enumerate() {
+            provider_items.push(crate::tui_menu::MenuItem {
+                label: p.display.to_string(),
+                description: format!("{}\nDefault: {}", p.name, p.default_model),
+                action_key: i.to_string(),
+            });
+        }
+        provider_items.push(crate::tui_menu::MenuItem {
+            label: "❌ Cancel".to_string(),
+            description: "Go back to main menu.".to_string(),
+            action_key: "cancel".to_string(),
+        });
+        
+        let provider_idx_str = crate::tui_menu::run_tui_menu("🔄 Switch AI Provider", &provider_items, 0)?;
+        let action = provider_idx_str.unwrap_or_else(|| "cancel".to_string());
+        if action == "cancel" {
             println!("  {}", "Cancelled.".yellow());
             return Ok(None);
         }
-    };
 
-    let provider = &PROVIDERS[provider_idx];
+        let provider_idx = action.parse::<usize>().unwrap_or(0);
+        let provider = &PROVIDERS[provider_idx];
 
-    let (final_api_base, model) = if provider.name == "custom" {
-        let base: String = Input::with_theme(&theme)
-            .with_prompt("Custom API Base URL")
-            .default(config.provider.api_base.clone().unwrap_or_else(|| "http://localhost:8045/v1".to_string()))
-            .interact_text()?;
-            
-        let m: String = Input::with_theme(&theme)
-            .with_prompt("Custom Model Name")
-            .default(if config.provider.provider == "custom" { config.provider.model.clone() } else { "custom-model".to_string() })
-            .interact_text()?;
-            
-        (Some(base), m)
-    } else {
-        let mut model_names: Vec<String> = provider.models.iter().map(|m| m.to_string()).collect();
-        model_names.push("❌ Cancel".to_string());
-    
-        let model_idx = Select::with_theme(&theme)
-            .with_prompt(format!("Select {} model", provider.name.green()))
-            .items(&model_names)
-            .default(0)
-            .interact_opt()?;
-            
-        let model_idx = match model_idx {
-            Some(idx) if idx < provider.models.len() => idx,
-            _ => {
+        let (final_api_base, model) = if provider.name == "custom" {
+            let base: String = Input::with_theme(&theme)
+                .with_prompt("Custom API Base URL")
+                .default(config.provider.api_base.clone().unwrap_or_else(|| "http://localhost:8045/v1".to_string()))
+                .interact_text()?;
+                
+            let m: String = Input::with_theme(&theme)
+                .with_prompt("Custom Model Name")
+                .default(if config.provider.provider == "custom" { config.provider.model.clone() } else { "custom-model".to_string() })
+                .interact_text()?;
+                
+            (Some(base), m)
+        } else {
+            let mut model_items = vec![];
+            for (i, m) in provider.models.iter().enumerate() {
+                model_items.push(crate::tui_menu::MenuItem {
+                    label: m.to_string(),
+                    description: format!("Model: {}", m),
+                    action_key: i.to_string(),
+                });
+            }
+            model_items.push(crate::tui_menu::MenuItem {
+                label: "⬅️ Back".to_string(),
+                description: "Return to Provider Selection".to_string(),
+                action_key: "back".to_string(),
+            });
+        
+            let model_idx_str = crate::tui_menu::run_tui_menu(&format!("🤖 Select {} model", provider.name), &model_items, 0)?;
+                
+            let m_action = model_idx_str.unwrap_or_else(|| "cancel".to_string());
+            if m_action == "back" {
+                continue; // Back to provider selection
+            } else if m_action == "cancel" {
                 println!("  {}", "Cancelled.".yellow());
                 return Ok(None);
             }
+            
+            let model_idx = m_action.parse::<usize>().unwrap_or(0);
+            (provider.api_base.map(|s| s.to_string()), provider.models[model_idx].to_string())
         };
-        
-        (provider.api_base.map(|s| s.to_string()), provider.models[model_idx].to_string())
-    };
 
-    // Check API Key
-    let final_api_key = if provider.needs_key {
-        let has_saved = config.provider.provider == provider.name && config.provider.api_key.is_some();
-        let has_env = std::env::var(provider.env_var).is_ok();
-        
-        if has_saved {
-            config.provider.api_key.clone()
-        } else if has_env {
-            Some(std::env::var(provider.env_var).unwrap())
-        } else {
-            println!();
-            println!("  ⚠️  No API key found for {}.", provider.display.green());
-            println!("  {}", format!("Get one at: {}", 
-                     match provider.name {
-                        "openai" => "https://platform.openai.com/api-keys",
-                        "gemini" => "https://aistudio.google.com/apikey",
-                        "groq" => "https://console.groq.com/keys",
-                        "openrouter" => "https://openrouter.ai/keys",
-                        "custom" => "your custom provider (leave blank if local endpoint)",
-                        _ => "your provider's website",
-                     }).dimmed());
-            println!();
+        // Check API Key
+        let final_api_key = if provider.needs_key {
+            let has_saved = config.provider.provider == provider.name && config.provider.api_key.is_some();
+            let has_env = std::env::var(provider.env_var).is_ok();
             
-            let key: String = Password::with_theme(&theme)
-                .with_prompt("  Enter API Key (Press Enter to skip)")
-                .interact()?;
-            
-            if key.trim().is_empty() {
-                if provider.name == "custom" {
-                    None
-                } else {
-                    println!("  {}", "❌ Setup cancelled. Key is usually required for this provider.".red());
-                    return Ok(None);
-                }
+            if has_saved {
+                config.provider.api_key.clone()
+            } else if has_env {
+                Some(std::env::var(provider.env_var).unwrap())
             } else {
-                Some(key.trim().to_string())
+                println!();
+                println!("  ⚠️  No API key found for {}.", provider.display.green());
+                println!("  {}", format!("Get one at: {}", 
+                         match provider.name {
+                            "openai" => "https://platform.openai.com/api-keys",
+                            "gemini" => "https://aistudio.google.com/apikey",
+                            "groq" => "https://console.groq.com/keys",
+                            "openrouter" => "https://openrouter.ai/keys",
+                            "custom" => "your custom provider (leave blank if local endpoint)",
+                            _ => "your provider's website",
+                         }).dimmed());
+                println!();
+                
+                let key: String = Password::with_theme(&theme)
+                    .with_prompt("  Enter API Key (Press Enter to skip)")
+                    .interact()?;
+                
+                if key.trim().is_empty() {
+                    if provider.name == "custom" {
+                        None
+                    } else {
+                        println!("  {}", "❌ Setup cancelled. Key is usually required for this provider.".red());
+                        return Ok(None);
+                    }
+                } else {
+                    Some(key.trim().to_string())
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
-    // Save configuration
-    config.provider = ProviderConfig {
-        provider: provider.name.to_string(),
-        model: model.to_string(),
-        api_key: final_api_key.clone(),
-        api_base: final_api_base.clone(),
-        ..Default::default()
-    };
+        // Save configuration
+        config.provider = ProviderConfig {
+            provider: provider.name.to_string(),
+            model: model.to_string(),
+            api_key: final_api_key.clone(),
+            api_base: final_api_base.clone(),
+            ..Default::default()
+        };
 
-    let config_path = ZenClawConfig::default_path();
-    config.save(&config_path)?;
-    
-    println!();
-    println!("  ✅ Switched to {} ({})", model.cyan().bold(), provider.name.green());
-    
-    Ok(Some((
-        provider.name.to_string(), 
-        model.to_string(), 
-        final_api_key, 
-        final_api_base
-    )))
+        let config_path = ZenClawConfig::default_path();
+        config.save(&config_path)?;
+        
+        println!();
+        println!("  ✅ Switched to {} ({})", model.cyan().bold(), provider.name.green());
+        
+        return Ok(Some((
+            provider.name.to_string(), 
+            model.to_string(), 
+            final_api_key, 
+            final_api_base
+        )));
+    }
 }

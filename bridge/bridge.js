@@ -25,18 +25,23 @@ client.on("ready", () => {
   console.log("✅ WhatsApp Bridge is ready!");
 });
 
-client.on("message", async (msg) => {
+const handleIncomingMessage = async (msg) => {
   if (msg.from === "status@broadcast") return;
 
+  // Prevent infinite loops: don't process messages sent by the bot unless it's to itself
+  // and ensure we don't process the bot's own AI responses.
+  if (msg.fromMe && msg.to !== msg.from) return;
+
   let senderName = msg._data.notifyName || "";
-  if (msg.author) {
-    // Group message
-    const contact = await client.getContactById(msg.author);
-    senderName = contact.pushname || contact.name || senderName;
-  } else {
-    const contact = await client.getContactById(msg.from);
-    senderName = contact.pushname || contact.name || senderName;
-  }
+  try {
+    if (msg.author) {
+      const contact = await client.getContactById(msg.author);
+      senderName = contact.pushname || contact.name || senderName;
+    } else {
+      const contact = await client.getContactById(msg.from);
+      senderName = contact.pushname || contact.name || senderName;
+    }
+  } catch (e) {}
 
   const payload = {
     id: msg.id.id,
@@ -47,6 +52,15 @@ client.on("message", async (msg) => {
   };
 
   messagesBuffer.push(payload);
+};
+
+client.on("message", handleIncomingMessage);
+
+client.on("message_create", async (msg) => {
+  // message_create captures messages sent by the authenticated user
+  if (msg.fromMe && msg.to === msg.from) {
+    handleIncomingMessage(msg);
+  }
 });
 
 // Exposed Endpoints for ZenClaw

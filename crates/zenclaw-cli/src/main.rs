@@ -5,6 +5,8 @@
 
 mod setup;
 mod ui;
+pub mod tui_app;
+pub mod tui_menu;
 
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -16,7 +18,6 @@ use tracing_subscriber::EnvFilter;
 use zenclaw_core::agent::{Agent, AgentConfig};
 use zenclaw_core::bus::EventBus;
 use zenclaw_core::config::ZenClawConfig;
-use zenclaw_core::memory::MemoryStore;
 use zenclaw_core::provider::ProviderConfig;
 use zenclaw_hub::channels::{DiscordConfig, TelegramConfig};
 use zenclaw_hub::memory::SqliteMemory;
@@ -27,9 +28,6 @@ use zenclaw_hub::tools::{
     CodebaseSearchTool, CronTool, EditFileTool, EnvTool, HealthTool, HistoryTool, ListDirTool, ProcessTool,
     ReadFileTool, ShellTool, SubAgentTool, SystemInfoTool, WebFetchTool, WebScrapeTool, WebSearchTool, WriteFileTool,
 };
-
-use rustyline::validate::{ValidationContext, ValidationResult, Validator};
-use rustyline_derive::{Completer, Helper, Hinter, Highlighter};
 
 // ─── CLI Definition ────────────────────────────────────────
 
@@ -595,81 +593,80 @@ async fn main() -> anyhow::Result<()> {
                 // Clear the screen for a cleaner UI loop experience
                 print!("\x1B[2J\x1B[1;1H");
                 io::stdout().flush().ok();
-
-                ui::print_banner();
-
+                
                 let has_config = ZenClawConfig::default_path().exists();
-                let mut options = vec![
-                    "1. 💬 Chat (Interactive)",
-                    "2. 🔄 Switch AI Model",
-                    "3. 🤖 Start Telegram Bot",
-                    "4. 🎮 Start Discord Bot",
-                    "5. 📱 Start WhatsApp Bot",
-                    "6. 🌐 Start REST API Server",
-                    "7. 📚 Manage Skills",
-                    "8. ⚙️  Settings",
-                    "9. 🔄 Check for Updates",
-                    "10. 🐛 View Live Logs",
-                    "11. ❌ Exit",
-                ];
 
-                if !has_config {
-                    options.insert(0, "0. ⚡ Setup Wizard (Start Here)");
+                let selected_action = tui_menu::run_main_menu(has_config)?;
+
+                if selected_action.is_none() {
+                    // Quit or Escape was pressed
+                    println!("Goodbye! 🦀");
+                    break;
                 }
 
-                let selection = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-                    .with_prompt("What would you like to do? (Use arrow keys or type number)")
-                    .default(0)
-                    .items(&options)
-                    .interact()?;
-
-                let choice = options[selection];
+                let choice = selected_action.unwrap();
                 let mut should_exit = false;
                 
-                let result = if choice.contains("Setup Wizard") {
-                    setup::run_setup()
-                } else if choice.contains("💬 Chat") {
-                    run_chat(None, None, None, None, vec![]).await
-                } else if choice.contains("Switch AI Model") {
-                    let _ = setup::run_model_switcher();
-                    Ok(())
-                } else if choice.contains("Telegram") {
-                    run_telegram(None, None, None, None, None).await
-                } else if choice.contains("Discord") {
-                    run_discord(None, None, None, None).await
-                } else if choice.contains("WhatsApp") {
-                    run_whatsapp("http://localhost:3001", None, None, None, None).await
-                } else if choice.contains("REST API") {
-                    run_serve("127.0.0.1", 3000, None, None, None).await
-                } else if choice.contains("Manage Skills") {
-                    run_skills(None).await
-                } else if choice.contains("Settings") {
-                    let config_options = vec!["1. Show Configuration", "2. Show Config Path", "3. Run Setup Wizard", "4. Back"];
-                    let config_sel = dialoguer::Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
-                        .with_prompt("⚙️ Settings:")
-                        .default(0)
-                        .items(&config_options)
-                        .interact()?;
-                        
-                    match config_sel {
-                        0 => setup::run_config_show(),
-                        1 => {
-                            println!("{}", ZenClawConfig::default_path().display());
-                            Ok(())
-                        },
-                        2 => setup::run_setup(),
-                        _ => Ok(()),
+                let result = match choice.as_str() {
+                    "setup" => setup::run_setup(),
+                    "chat" => run_chat(None, None, None, None, vec![]).await,
+                    "switch" => {
+                        let _ = setup::run_model_switcher();
+                        Ok(())
                     }
-                } else if choice.contains("Updates") {
-                    run_update_check().await
-                } else if choice.contains("Live Logs") {
-                    run_logs(50).await
-                } else if choice.contains("Exit") {
-                    println!("Goodbye! 🦀");
-                    should_exit = true;
-                    Ok(())
-                } else {
-                    Ok(())
+                    "telegram" => run_telegram(None, None, None, None, None).await,
+                    "discord" => run_discord(None, None, None, None).await,
+                    "whatsapp" => run_whatsapp("http://localhost:3001", None, None, None, None).await,
+                    "api" => run_serve("127.0.0.1", 3000, None, None, None).await,
+                    "skills" => run_skills(None).await,
+                    "settings" => {
+                        loop {
+                            let config_options = vec![
+                                tui_menu::MenuItem { label: "1. Show Configuration".into(), description: "Display current config values.".into(), action_key: "0".into() },
+                                tui_menu::MenuItem { label: "2. Show Config Path".into(), description: "Show the absolute path to your config file.".into(), action_key: "1".into() },
+                                tui_menu::MenuItem { label: "3. Run Setup Wizard".into(), description: "Re-run the first-time setup wizard to generate a new config.".into(), action_key: "2".into() },
+                                tui_menu::MenuItem { label: "4. Back".into(), description: "Return to main menu.".into(), action_key: "3".into() },
+                            ];
+                            let config_sel = tui_menu::run_tui_menu("⚙️ Settings", &config_options, 0)?;
+                            
+                            match config_sel.as_deref() {
+                                Some("0") => {
+                                    let mut out = Vec::new();
+                                    {
+                                        let mut w = std::io::BufWriter::new(&mut out);
+                                        // Read the file directly instead of calling `run_config_show` which prints to stdout
+                                        if let Ok(c) = std::fs::read_to_string(ZenClawConfig::default_path()) {
+                                            use std::io::Write;
+                                            writeln!(w, "Current configuration file contents:\n{}", c).unwrap();
+                                        } else {
+                                            use std::io::Write;
+                                            writeln!(w, "No configuration found at {:?}", ZenClawConfig::default_path()).unwrap();
+                                        }
+                                    }
+                                    let content = String::from_utf8_lossy(&out).to_string();
+                                    tui_menu::run_tui_text_viewer("Configuration", &content).ok();
+                                },
+                                Some("1") => {
+                                    let path = ZenClawConfig::default_path().display().to_string();
+                                    tui_menu::run_tui_text_viewer("Config Path", &path).ok();
+                                },
+                                Some("2") => {
+                                    setup::run_setup().ok();
+                                },
+                                Some("3") | None => {
+                                    break Ok(());
+                                }
+                                _ => break Ok(())
+                            }
+                        }
+                    }
+                    "updates" => run_update_check().await,
+                    "logs" => run_logs(50).await,
+                    "exit" | _ => {
+                        println!("Goodbye! 🦀");
+                        should_exit = true;
+                        Ok(())
+                    }
                 };
 
                 // Handle errors gracefully without crashing the loop
@@ -693,50 +690,6 @@ async fn main() -> anyhow::Result<()> {
 
 // ─── Command Handlers ──────────────────────────────────────
 
-#[derive(Completer, Helper, Hinter, Highlighter)]
-struct CliHelper;
-
-impl Validator for CliHelper {
-    fn validate(&self, ctx: &mut ValidationContext) -> rustyline::Result<ValidationResult> {
-        let input = ctx.input();
-        
-        // 1. Check for manual continuation via trailing backslash
-        if input.trim_end().ends_with('\\') {
-            return Ok(ValidationResult::Incomplete);
-        }
-
-        // 2. Check for unclosed markdown code blocks (odd number of ```)
-        let backtick_count = input.split("```").count() - 1;
-        if !backtick_count.is_multiple_of(2) {
-            return Ok(ValidationResult::Incomplete);
-        }
-
-        Ok(ValidationResult::Valid(None))
-    }
-}
-
-fn extract_code_blocks(text: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut current_block = String::new();
-    let mut in_block = false;
-
-    for line in text.lines() {
-        if line.starts_with("```") {
-            if in_block {
-                blocks.push(current_block.trim().to_string());
-                current_block.clear();
-                in_block = false;
-            } else {
-                in_block = true;
-            }
-        } else if in_block {
-            current_block.push_str(line);
-            current_block.push('\n');
-        }
-    }
-    blocks
-}
-
 async fn run_chat(
     provider_name: Option<&str>,
     model: Option<&str>,
@@ -754,7 +707,7 @@ async fn run_chat(
         if prompt.is_empty() { None } else { Some(prompt) }
     };
 
-    let (mut agent, mut provider, memory, mut provider_name, mut model) = setup_bot_env(
+    let (agent, provider, memory, provider_name, model) = setup_bot_env(
         provider_name,
         model,
         api_key,
@@ -766,197 +719,41 @@ async fn run_chat(
 
     let session_key = "cli:default";
     
-    let config = rustyline::Config::builder()
-        .auto_add_history(true)
-        .bracketed_paste(true)
-        .build();
-    let mut rl = rustyline::Editor::with_config(config)?;
-    rl.set_helper(Some(CliHelper));
-    
-    let mut last_response = String::new();
-    let mut last_code_blocks: Vec<String> = Vec::new();
+    // Set up Alternate Screen & Raw Mode for TUI
+    crossterm::terminal::enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    crossterm::execute!(
+        stdout, 
+        crossterm::terminal::EnterAlternateScreen, 
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
+    )?;
+    let backend = ratatui::backend::CrosstermBackend::new(stdout);
+    let terminal = ratatui::Terminal::new(backend)?;
 
-    loop {
-        let readline = rl.readline(&format!("{} ", "You ›".green().bold()));
-        
-        let input = match readline {
-            Ok(line) => {
-                let _ = rl.add_history_entry(line.as_str());
-                line
-            },
-            Err(_) => break, // EOF or Ctrl-C handles exit
-        };
-        
-        let input = input.trim();
+    let bus = std::sync::Arc::new(EventBus::new(32));
 
-        if input.is_empty() {
-            continue;
-        }
+    // RUN THE TUI
+    let res = tui_app::run_tui(
+        terminal,
+        std::sync::Arc::new(agent),
+        std::sync::Arc::new(provider),
+        std::sync::Arc::new(memory),
+        session_key.to_string(),
+        bus,
+    ).await;
 
-        match input {
-            "/quit" | "/exit" | "/q" => {
-                println!("{}", "👋 Goodbye!".cyan());
-                break;
-            }
-            "/clear" => {
-                memory.clear_history(session_key).await?;
-                println!("{}", "🗑️  History cleared.".yellow());
-                continue;
-            }
-            "/tools" => {
-                ui::print_tools_list(agent.tools.names().into_iter().map(|s: &str| s.to_string()));
-                continue;
-            }
-            "/model" => {
-                ui::print_model_status(&provider_name, &model);
-                
-                if let Ok(Some((p, m, k, b))) = setup::run_model_switcher() {
-                    provider_name = p.clone();
-                    model = m.clone();
-                    agent.config.model = Some(m.clone());
-                    provider = create_provider(&p, k.as_deref().unwrap_or(""), &m, b.as_deref());
-                    ui::print_model_status(&provider_name, &model);
-                }
-                
-                continue;
-            }
-            "/skills" => {
-                let data = setup::data_dir();
-                let mut skill_mgr = SkillManager::new(&data.join("skills"));
-                let _ = skill_mgr.load_all().await;
-                let items: Vec<(String, String, bool)> = skill_mgr.list().iter().map(|s| {
-                    (s.name.clone(), s.description.clone(), active_skills.contains(&s.name))
-                }).collect();
-                ui::print_skills_list(&items);
-                continue;
-            }
-            "/copy" => {
-                let to_copy = if !last_code_blocks.is_empty() {
-                    last_code_blocks.join("\n\n")
-                } else {
-                    last_response.clone()
-                };
-                
-                if to_copy.is_empty() {
-                    println!("  ⚠️  Nothing to copy yet.");
-                    continue;
-                }
-                
-                match arboard::Clipboard::new() {
-                    Ok(mut cb) => {
-                        let _ = cb.set_text(&to_copy);
-                        if !last_code_blocks.is_empty() {
-                            println!("  {} {} code block(s) to clipboard!", "✅ Copied".green(), last_code_blocks.len());
-                        } else {
-                            println!("  {}", "✅ Copied response to clipboard!".green());
-                        }
-                    }
-                    Err(e) => println!("  {} {}", "❌ Clipboard error:".red(), e),
-                }
-                println!();
-                continue;
-            }
-            "/run" => {
-                if last_code_blocks.is_empty() {
-                    println!("  ⚠️  No code blocks found to run.");
-                    continue;
-                }
-                
-                let cmd = last_code_blocks.join("\n");
-                println!("\n{}", "⚠️  WARNING: You are about to execute the following command(s):".red().bold());
-                println!("    {}\n", cmd.replace("\n", "\n    ").cyan());
-                
-                let confirm = dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
-                    .with_prompt("Do you want to proceed?")
-                    .default(false)
-                    .interact()?;
-                    
-                if confirm {
-                    println!("  {} Executing...\n", "▶️".green());
-                    let status = if cfg!(target_os = "windows") {
-                        std::process::Command::new("cmd")
-                            .args(["/C", &cmd])
-                            .status()
-                    } else {
-                        std::process::Command::new("sh")
-                            .arg("-c")
-                            .arg(&cmd)
-                            .status()
-                    };
-                    
-                    match status {
-                        Ok(st) => if !st.success() { println!("  {} Process exited with error: {}", "❌".red(), st); },
-                        Err(e) => println!("  {} Failed to execute: {}", "❌".red(), e),
-                    }
-                } else {
-                    println!("  {}", "Cancelled.".yellow());
-                }
-                println!();
-                continue;
-            }
-            "/help" => {
-                ui::print_help();
-                continue;
-            }
-            _ => {}
-        }
+    // Restore terminal exactly as before
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste
+    )?;
 
-        // Live transparent status — every agent step prints a new line
-        // so the user sees exactly what ZenClaw is doing in real-time.
-        let spinner = indicatif::ProgressBar::new_spinner();
-        spinner.set_style(
-            indicatif::ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_strings(&["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]),
-        );
-        spinner.set_message("🧠 Analyzing your question...");
-        spinner.enable_steady_tick(std::time::Duration::from_millis(80));
-
-        let bus = EventBus::new(32);
-        let mut rx = bus.subscribe_system();
-        let sp_clone = spinner.clone();
-
-        let _bg_task = tokio::spawn(async move {
-            while let Ok(event) = rx.recv().await {
-                if let Some(msg) = event.format_status() {
-                    // Only update the spinner in-place to avoid spamming the terminal with double lines
-                    sp_clone.set_message(msg);
-                }
-            }
-        });
-
-        tokio::select! {
-            res = agent.process(&provider, &memory, input, session_key, Some(&bus)) => {
-                match res {
-                    Ok(response) => {
-                        spinner.finish_and_clear();
-
-                        ui::print_ai_prefix();
-                        let skin = ui::make_mad_skin();
-                        print!("{}", skin.term_text(response.trim()));
-                        println!();
-
-                        last_response = response.clone();
-                        last_code_blocks = extract_code_blocks(&response);
-
-                        if !last_code_blocks.is_empty() {
-                            ui::print_code_tip();
-                        }
-
-                        ui::print_turn_divider();
-                    }
-                    Err(e) => {
-                        spinner.finish_and_clear();
-                        eprintln!("{} {}\n", "Error:".red().bold(), e);
-                    }
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                spinner.finish_and_clear();
-                println!("\n  {} {}", "⛔".red(), "Request cancelled by user.".yellow());
-            }
-        }
-
+    if let Err(e) = res {
+        eprintln!("{} {}", "UI Error:".red(), e);
     }
 
     Ok(())
@@ -1239,39 +1036,39 @@ async fn run_skills(action: Option<SkillAction>) -> anyhow::Result<()> {
             }
         }
         _ => {
-            // List skills (default)
-            println!();
-            println!("  {}", "📚 Available Skills:".bold());
-            println!("  {} {}\n", "Directory:".dimmed(), skill_mgr.dir().display().to_string().dimmed());
-
-            if skill_mgr.list().is_empty() {
-                println!("  {}", "No skills found. Skills will be created on first use.".dimmed());
-            } else {
+            loop {
+                let mut items = vec![];
                 for skill in skill_mgr.list() {
-                    println!(
-                        "  {} {} — {}",
-                        "•".cyan(),
-                        skill.name.cyan().bold(),
-                        skill.description.dimmed()
-                    );
+                    items.push(crate::tui_menu::MenuItem {
+                        label: format!("{} {}", "•".cyan(), skill.name),
+                        description: format!("Skill: {}\n\n{}\n\nFile: {}", skill.title, skill.description, skill.path.display()),
+                        action_key: skill.name.clone(),
+                    });
+                }
+                items.push(crate::tui_menu::MenuItem {
+                    label: "❌ Back".to_string(),
+                    description: "Return to previous menu.".to_string(),
+                    action_key: "back".to_string(),
+                });
+
+                if let Ok(Some(action_key)) = crate::tui_menu::run_tui_menu("📚 Manage Skills", &items, 0) {
+                    if action_key == "back" {
+                        break;
+                    }
+                    if let Some(skill) = skill_mgr.get(&action_key) {
+                        let content = format!(
+                            "Skill: {}\nDescription: {}\nFile: {}\n\n{}\n",
+                            skill.title,
+                            skill.description,
+                            skill.path.display(),
+                            skill.content
+                        );
+                        crate::tui_menu::run_tui_text_viewer(&skill.title, &content).ok();
+                    }
+                } else {
+                    break;
                 }
             }
-
-            println!();
-            println!("  {}", "Usage:".bold());
-            println!(
-                "    {} — Activate during chat",
-                "zenclaw chat --skill coding".cyan()
-            );
-            println!(
-                "    {} — View skill content",
-                "zenclaw skills show coding".cyan()
-            );
-            println!(
-                "    {} — Add custom skill",
-                format!("Create a .md file in {}", skill_mgr.dir().display()).dimmed()
-            );
-            println!();
         }
     }
 
@@ -1437,7 +1234,22 @@ async fn run_update_check() -> anyhow::Result<()> {
 async fn run_logs(initial_lines: usize) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
     use tokio::fs::File;
+    use tokio::sync::mpsc;
     use chrono;
+    use crossterm::{
+        event::{self, Event, KeyCode, KeyModifiers},
+        execute,
+        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    };
+    use ratatui::{
+        backend::CrosstermBackend,
+        layout::{Constraint, Direction, Layout},
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+        Terminal,
+    };
+    use std::time::Duration;
     
     let log_dir = setup::data_dir().join("logs");
     let log_file = log_dir.join(format!("zenclaw.log.{}", chrono::Local::now().format("%Y-%m-%d")));
@@ -1447,52 +1259,185 @@ async fn run_logs(initial_lines: usize) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{}", format!("👀 Tailing ZenClaw logs from {}...", log_file.display()).cyan());
-    println!("{}", "Press Ctrl+C to exit.".dimmed());
-    println!();
-    
-    // Quick ugly way to get last N lines synchronously
+    // Channel for async log tailing
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    // Initial lines
+    let mut logs = Vec::new();
     if let Ok(content) = std::fs::read_to_string(&log_file) {
         let lines: Vec<&str> = content.lines().collect();
         let start = lines.len().saturating_sub(initial_lines);
         for line in lines.into_iter().skip(start) {
-            println!("{}", colorize_log(line));
+            logs.push(line.to_string());
         }
     }
 
-    // Tail future lines asynchronously
-    let file = File::open(&log_file).await?;
-    let metadata = file.metadata().await?;
-    let mut reader = BufReader::new(file);
-    // Seek to end
-    reader.seek(std::io::SeekFrom::Start(metadata.len())).await?;
-    
-    let mut line_buf = String::new();
+    // Spawn tailing task
+    let log_file_clone = log_file.clone();
+    let tail_handle = tokio::spawn(async move {
+        if let Ok(file) = File::open(&log_file_clone).await {
+            if let Ok(metadata) = file.metadata().await {
+                let mut reader = BufReader::new(file);
+                let _ = reader.seek(std::io::SeekFrom::Start(metadata.len())).await;
+                let mut line_buf = String::new();
+                loop {
+                    line_buf.clear();
+                    if let Ok(bytes) = reader.read_line(&mut line_buf).await {
+                        if bytes == 0 {
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            continue;
+                        }
+                        let trimmed = line_buf.trim_end();
+                        if !trimmed.is_empty() {
+                            if tx.send(trimmed.to_string()).await.is_err() {
+                                break;
+                            }
+                        }
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            }
+        }
+    });
+
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = std::io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut list_state = ListState::default();
+    let mut auto_scroll = true;
+
     loop {
-        line_buf.clear();
-        let bytes = reader.read_line(&mut line_buf).await?;
-        if bytes == 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            continue;
+        // Drain new logs
+        while let Ok(line) = rx.try_recv() {
+            logs.push(line);
         }
-        
-        let trimmed = line_buf.trim_end();
-        if !trimmed.is_empty() {
-            println!("{}", colorize_log(trimmed));
-        }
-    }
-}
 
-fn colorize_log(line: &str) -> String {
-    if line.contains(" ERROR ") {
-        line.red().to_string()
-    } else if line.contains(" WARN ") {
-        line.yellow().to_string()
-    } else if line.contains(" INFO ") {
-        line.green().to_string()
-    } else if line.contains(" DEBUG ") {
-        line.blue().to_string()
-    } else {
-        line.dimmed().to_string()
+        // Auto-scroll
+        if auto_scroll && !logs.is_empty() {
+            list_state.select(Some(logs.len().saturating_sub(1)));
+        }
+
+        terminal.draw(|f| {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Length(3), // Header
+                    Constraint::Min(0),    // Logs
+                ].as_ref())
+                .split(f.area());
+
+            // Header
+            let status = if auto_scroll { " ⬇️ AUTO-SCROLL (On) " } else { " ⏸️ AUTO-SCROLL (Off) " };
+            let header = Paragraph::new(Line::from(vec![
+                Span::styled(format!(" 🐛 Live Logs: {} ", log_file.display()), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(status, Style::default().fg(if auto_scroll { Color::Green } else { Color::Yellow })),
+                Span::styled(" [Press 'q' or 'Esc' to exit, UP/DOWN to scroll] ", Style::default().fg(Color::DarkGray)),
+            ]))
+            .block(Block::default().borders(Borders::ALL));
+            
+            f.render_widget(header, chunks[0]);
+
+            // Logs
+            let items: Vec<ListItem> = logs.iter().map(|line| {
+                let (fg_color, bold) = if line.contains(" ERROR ") {
+                    (Color::Red, true)
+                } else if line.contains(" WARN ") {
+                    (Color::Yellow, true)
+                } else if line.contains(" INFO ") {
+                    (Color::Green, false)
+                } else if line.contains(" DEBUG ") {
+                    (Color::Blue, false)
+                } else {
+                    (Color::DarkGray, false)
+                };
+
+                let mut style = Style::default().fg(fg_color);
+                if bold {
+                    style = style.add_modifier(Modifier::BOLD);
+                }
+                ListItem::new(Line::from(vec![Span::styled(line, style)]))
+            }).collect();
+
+            let logs_list = List::new(items)
+                .block(Block::default().borders(Borders::ALL))
+                .highlight_style(Style::default().bg(Color::DarkGray))
+                .highlight_symbol(if auto_scroll { " " } else { "▶ " });
+
+            f.render_stateful_widget(logs_list, chunks[1], &mut list_state);
+        })?;
+
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Up => {
+                        auto_scroll = false;
+                        let i = match list_state.selected() {
+                            Some(i) => i.saturating_sub(1),
+                            None => logs.len().saturating_sub(1),
+                        };
+                        list_state.select(Some(i));
+                    }
+                    KeyCode::Down => {
+                        let i = match list_state.selected() {
+                            Some(i) => {
+                                let next = i.saturating_add(1);
+                                if next >= logs.len().saturating_sub(1) {
+                                    auto_scroll = true;
+                                    logs.len().saturating_sub(1)
+                                } else {
+                                    next
+                                }
+                            }
+                            None => logs.len().saturating_sub(1),
+                        };
+                        list_state.select(Some(i));
+                    }
+                    KeyCode::PageUp => {
+                        auto_scroll = false;
+                        let i = match list_state.selected() {
+                            Some(i) => i.saturating_sub(20),
+                            None => logs.len().saturating_sub(20),
+                        };
+                        list_state.select(Some(i));
+                    }
+                    KeyCode::PageDown => {
+                        let i = match list_state.selected() {
+                            Some(i) => {
+                                let next = i.saturating_add(20);
+                                if next >= logs.len().saturating_sub(1) {
+                                    auto_scroll = true;
+                                    logs.len().saturating_sub(1)
+                                } else {
+                                    next
+                                }
+                            }
+                            None => logs.len().saturating_sub(1),
+                        };
+                        list_state.select(Some(i));
+                    }
+                    KeyCode::End => {
+                        auto_scroll = true;
+                        list_state.select(Some(logs.len().saturating_sub(1)));
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
+
+    // Cleanup
+    tail_handle.abort();
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    
+    Ok(())
 }
