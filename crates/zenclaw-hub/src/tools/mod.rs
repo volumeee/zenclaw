@@ -12,7 +12,7 @@ pub mod history;
 pub mod indexer;
 pub mod webhook;
 pub mod env;
-
+pub mod code_search;
 pub use shell::ShellTool;
 pub use process::ProcessTool;
 pub use subagent::SubAgentTool;
@@ -27,3 +27,4 @@ pub use history::HistoryTool;
 pub use indexer::IndexerTool;
 pub use webhook::{WebhookTool, WebhookStore, new_webhook_store};
 pub use env::EnvTool;
+pub use code_search::CodebaseSearchTool;

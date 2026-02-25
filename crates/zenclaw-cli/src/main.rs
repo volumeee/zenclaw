@@ -24,7 +24,7 @@ use zenclaw_hub::providers::OpenAiProvider;
 use zenclaw_hub::skills::SkillManager;
 use zenclaw_hub::plugins::PluginManager;
 use zenclaw_hub::tools::{
-    CronTool, EditFileTool, EnvTool, HealthTool, HistoryTool, ListDirTool, ProcessTool,
+    CodebaseSearchTool, CronTool, EditFileTool, EnvTool, HealthTool, HistoryTool, ListDirTool, ProcessTool,
     ReadFileTool, ShellTool, SubAgentTool, SystemInfoTool, WebFetchTool, WebScrapeTool, WebSearchTool, WriteFileTool,
 };
 
@@ -411,6 +411,7 @@ async fn build_agent(model: &str, skill_prompt: Option<&str>) -> Agent {
     agent.tools.register(WriteFileTool::new());
     agent.tools.register(EditFileTool::new());
     agent.tools.register(ListDirTool::new());
+    agent.tools.register(CodebaseSearchTool::new());
     agent.tools.register(WebFetchTool::new());
     agent.tools.register(WebScrapeTool::new());
     agent.tools.register(WebSearchTool::new());

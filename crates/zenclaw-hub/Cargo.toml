@@ -23,6 +23,8 @@ hostname = "0.4"
 dirs = { workspace = true }
 axum = { workspace = true }
 wa-rs = "0.2.0"
+ignore = "0.4.25"
+regex = "1.12.3"
 
 [dev-dependencies]
 tempfile = "3"
