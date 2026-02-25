@@ -4,6 +4,7 @@
 //! Run `zenclaw setup` to get started!
 
 mod setup;
+mod ui;
 
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -222,24 +223,7 @@ enum SkillAction {
 
 // ─── Helpers ───────────────────────────────────────────────
 
-fn print_banner() {
-    let version = env!("CARGO_PKG_VERSION");
-    let title = format!("    ║        ⚡ ZenClaw v{} ⚡         ║", version);
-    println!();
-    println!(
-        "{}",
-        "    ╔══════════════════════════════════════╗".cyan()
-    );
-    println!("{}", title.cyan());
-    println!(
-        "{}",
-        "    ║   Build AI the simple way 🦀        ║".cyan()
-    );
-    println!(
-        "{}",
-        "    ╚══════════════════════════════════════╝\n".cyan()
-    );
-}
+
 
 fn resolve_api_key(provided: Option<&str>, provider: &str) -> Option<String> {
     if let Some(key) = provided {
@@ -608,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
                 print!("\x1B[2J\x1B[1;1H");
                 io::stdout().flush().ok();
 
-                print_banner();
+    ui::print_banner();
 
                 let has_config = ZenClawConfig::default_path().exists();
                 let mut options = vec![
@@ -752,37 +736,7 @@ async fn run_chat(
         skill_prompt.as_deref()
     ).await?;
 
-    print_banner();
-    println!(
-        "  {} {} {} {} {}",
-        "Provider:".dimmed(),
-        provider_name.green(),
-        "│".dimmed(),
-        "Model:".dimmed(),
-        model.green()
-    );
-    println!(
-        "  {} {} {} {} {}",
-        "Tools:".dimmed(),
-        agent.tools.len().to_string().cyan(),
-        "│".dimmed(),
-        "Memory:".dimmed(),
-        "SQLite".green()
-    );
-    if !active_skills.is_empty() {
-        println!(
-            "  {} {}",
-            "Skills:".dimmed(),
-            active_skills.join(", ").yellow()
-        );
-    }
-    println!();
-    println!(
-        "  {} {}",
-        "Commands:".dimmed(),
-        "/quit /clear /tools /model /skills /help".dimmed()
-    );
-    println!();
+    ui::print_session_info(&provider_name, &model, agent.tools.len(), &active_skills);
 
     let session_key = "cli:default";
     
@@ -818,22 +772,18 @@ async fn run_chat(
                 continue;
             }
             "/tools" => {
-                println!("\n{}", "🔧 Registered Tools:".bold());
-                for name in agent.tools.names() {
-                    println!("   • {}", name.cyan());
-                }
-                println!();
+                ui::print_tools_list(agent.tools.names().into_iter().map(|s: &str| s.to_string()));
                 continue;
             }
             "/model" => {
-                println!("  {} {}", "Provider:".dimmed(), provider_name.green());
-                println!("  {} {}", "Model:".dimmed(), model.green());
+                ui::print_model_status(&provider_name, &model);
                 
                 if let Ok(Some((p, m, k, b))) = setup::run_model_switcher() {
                     provider_name = p.clone();
                     model = m.clone();
                     agent.config.model = Some(m.clone());
                     provider = create_provider(&p, k.as_deref().unwrap_or(""), &m, b.as_deref());
+                    ui::print_model_status(&provider_name, &model);
                 }
                 
                 continue;
@@ -929,16 +879,7 @@ async fn run_chat(
                 continue;
             }
             "/help" => {
-                println!("\n{}", "Commands:".bold());
-                println!("  /quit    — Exit");
-                println!("  /clear   — Clear conversation history");
-                println!("  /tools   — List registered tools");
-                println!("  /model   — Show current model");
-                println!("  /skills  — List available skills");
-                println!("  /copy    — Copy last response or code block to clipboard");
-                println!("  /run     — Execute last generated code block in terminal");
-                println!("  /help    — Show this help");
-                println!();
+                ui::print_help();
                 continue;
             }
             _ => {}
@@ -971,33 +912,17 @@ async fn run_chat(
         match agent.process(&provider, &memory, input, session_key, Some(&bus)).await {
             Ok(response) => {
                 spinner.finish_and_clear();
-                
-                // Print stylish Markdown output using termimad
-                print!("\n{} ", "AI ›".cyan().bold());
-                std::io::stdout().flush().unwrap_or(());
-                
-                // Create a clean skin
-                let mut skin = termimad::MadSkin::default();
-                skin.set_headers_fg(termimad::crossterm::style::Color::Cyan);
-                skin.bold.set_fg(termimad::crossterm::style::Color::Yellow);
-                skin.italic.set_fg(termimad::crossterm::style::Color::Green);
-                skin.quote_mark.set_fg(termimad::crossterm::style::Color::DarkGrey);
-                
+
+                ui::print_ai_prefix();
+                let skin = ui::make_mad_skin();
                 print!("{}", skin.term_text(response.trim()));
                 println!();
-                
+
                 last_response = response.clone();
                 last_code_blocks = extract_code_blocks(&response);
-                
+
                 if !last_code_blocks.is_empty() {
-                    println!("\n  {} {} {}, or {} {}", 
-                        "💡 Tip: Type".dimmed(), 
-                        "/copy".bold().cyan(), 
-                        "to copy code".dimmed(), 
-                        "/run".bold().cyan(), 
-                        "to execute it".dimmed()
-                    );
-                    println!();
+                    ui::print_code_tip();
                 }
             }
             Err(e) => {
@@ -1033,7 +958,7 @@ async fn run_ask(
 }
 
 async fn run_status() -> anyhow::Result<()> {
-    print_banner();
+    ui::print_banner();
 
     let has_config = ZenClawConfig::default_path().exists();
     let config = setup::load_saved_config();
@@ -1154,7 +1079,7 @@ async fn run_telegram(
     let agent = Arc::new(agent);
     let memory = Arc::new(memory);
 
-    print_banner();
+    ui::print_banner();
     println!("  {} {}", "Mode:".dimmed(), "🤖 Telegram Bot".green().bold());
     println!("  {} {} │ {} {}", "Provider:".dimmed(), provider_name.green(), "Model:".dimmed(), model.green());
     println!(
@@ -1240,7 +1165,7 @@ async fn run_discord(
     let agent = Arc::new(agent);
     let memory = Arc::new(memory);
 
-    print_banner();
+    ui::print_banner();
     println!("  {} {}", "Mode:".dimmed(), "🎮 Discord Bot".green().bold());
     println!("  {} {} │ {} {}", "Provider:".dimmed(), provider_name.green(), "Model:".dimmed(), model.green());
     println!(
@@ -1347,7 +1272,7 @@ async fn run_serve(
     let rag_path = data.join("rag.db");
     let rag = zenclaw_hub::memory::RagStore::open(&rag_path).ok();
 
-    print_banner();
+    ui::print_banner();
     println!("  {} {}", "Mode:".dimmed(), "🌐 REST API Server".green().bold());
     println!("  {} {}", "Provider:".dimmed(), provider_name.cyan());
     println!("  {} {}", "Model:".dimmed(), model.cyan());
@@ -1404,7 +1329,7 @@ async fn run_whatsapp(
         None
     ).await?;
 
-    print_banner();
+    ui::print_banner();
     println!("  {} {}", "Mode:".dimmed(), "📱 WhatsApp Bot".green().bold());
     println!("  {} {}", "Bridge:".dimmed(), bridge_url.cyan());
     println!("  {} {}", "Provider:".dimmed(), provider_name.cyan());
@@ -1426,7 +1351,7 @@ async fn run_whatsapp(
 // ─── Update Check ──────────────────────────────────────────
 
 async fn run_update_check() -> anyhow::Result<()> {
-    print_banner();
+    ui::print_banner();
     println!("  🔄 Checking for updates...\n");
 
     match zenclaw_hub::updater::check_for_updates().await {
