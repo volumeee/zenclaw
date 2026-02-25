@@ -1339,9 +1339,24 @@ async fn run_update_check() -> anyhow::Result<()> {
                 }
             }
 
+            let install_cmd = match std::env::consts::OS {
+                "windows" => format!(
+                    "Invoke-WebRequest -Uri https://github.com/volumeee/zenclaw/releases/download/v{}/zenclaw-windows-amd64.exe -OutFile zenclaw.exe",
+                    info.latest
+                ),
+                "macos" => format!(
+                    "curl -L https://github.com/volumeee/zenclaw/releases/download/v{}/zenclaw-macos-$(uname -m).tar.gz | tar -xz && sudo mv zenclaw /usr/local/bin/zenclaw",
+                    info.latest
+                ),
+                _ => format!(
+                    "wget -qO- https://github.com/volumeee/zenclaw/releases/download/v{}/zenclaw-linux-$(uname -m).tar.gz | tar -xz && sudo mv zenclaw /usr/local/bin/zenclaw",
+                    info.latest
+                ),
+            };
+
             println!(
                 "\n  To update run this command in your terminal:\n  {}",
-                "wget -qO- https://github.com/volumeee/zenclaw/releases/download/v0.1.4/zenclaw-linux-$(uname -m).tar.gz | tar -xz && sudo mv zenclaw-linux-$(uname -m) /usr/local/bin/zenclaw".cyan()
+                install_cmd.cyan()
             );
         }
         Ok(None) => {
