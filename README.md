@@ -6,7 +6,7 @@
 
 <p align="center">
   Lightweight, open-source AI agent framework for embedded &amp; edge devices.<br/>
-  One binary. Zero Python. Infinite possibilities.
+  Hybrid Architecture: Native Rust 🦀 Core + Node.js 🟢 Bridge for seamless Web &amp; WhatsApp interactions.
 </p>
 
 <p align="center">
@@ -37,8 +37,8 @@ ZenClaw's core is built in Rust — giving you a tiny, fast, self-contained bina
 | **RAG System**       | **✅ SQLite FTS5 built-in**                        | ChromaDB / External                                  | Vector Search / Files                                | MarkDown Files                                     |
 | **Edge/ARM ready**   | **✅ Yes (Pi Zero/STB)** (core only)               | ❌ Too Heavy                                         | ⚠️ Requires Docker                                   | ✅ Yes (RISC-V/ARM)                                |
 
-> **ZenClaw core** runs as a single **5.1MB Rust binary** — zero dependencies needed for CLI, Telegram, Discord, REST API, and RAG.
-> **WhatsApp** and **web scraping** use the optional `bridge/` Node.js helper (Puppeteer + whatsapp-web.js).
+> **ZenClaw core** runs as a single **5.1MB Rust binary** — zero dependencies needed for CLI, REST API, Discord, Telegram, and RAG.
+> **Web interactions (WhatsApp & Headless Scraping)** are gracefully handled by the accompanying `bridge/` Node.js service (Puppeteer + whatsapp-web.js), combining the speed and safety of Rust with the rich Web/NPM ecosystem.
 
 ---
 
@@ -356,16 +356,32 @@ docker run -p 3000:3000 -e GEMINI_API_KEY=your-key zenclaw
 
 ### Systemd Service
 
+For a robust production setup, run both the Rust core and Node.js bridge as background services:
+
+**1. Setup Node.js Bridge (via PM2):**
+
+```bash
+cd bridge
+npm install
+npm install -g pm2
+pm2 start bridge.js --name "zenclaw-bridge"
+pm2 save
+pm2 startup
+```
+
+**2. Setup Rust Core (via Systemd):**
+
 ```bash
 sudo tee /etc/systemd/system/zenclaw.service << 'EOF'
 [Unit]
-Description=ZenClaw AI Agent
+Description=ZenClaw AI Agent (WhatsApp Mode)
 After=network.target
 
 [Service]
 Type=simple
 User=pi
-ExecStart=/usr/local/bin/zenclaw serve --host 0.0.0.0 --port 3000
+WorkingDirectory=/home/pi/zenclaw
+ExecStart=/usr/local/bin/zenclaw whatsapp --bridge http://localhost:3001
 Restart=always
 Environment="RUST_LOG=info"
 Environment="GEMINI_API_KEY=your-key"
