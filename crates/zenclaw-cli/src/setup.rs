@@ -482,6 +482,7 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Run an interactive model switcher and return the selected provider configurations if completing smoothly.
+#[allow(clippy::type_complexity)]
 pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<String>, Option<String>)>> {
     let theme = ColorfulTheme::default();
     let mut config = load_saved_config().unwrap_or_default();

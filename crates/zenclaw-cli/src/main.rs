@@ -662,7 +662,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     "updates" => run_update_check().await,
                     "logs" => run_logs(50).await,
-                    "exit" | _ => {
+                    _ => {
                         println!("Goodbye! 🦀");
                         should_exit = true;
                         Ok(())
@@ -1275,6 +1275,7 @@ async fn run_logs(initial_lines: usize) -> anyhow::Result<()> {
     // Spawn tailing task
     let log_file_clone = log_file.clone();
     let tail_handle = tokio::spawn(async move {
+        #[allow(clippy::collapsible_if)]
         if let Ok(file) = File::open(&log_file_clone).await {
             if let Ok(metadata) = file.metadata().await {
                 let mut reader = BufReader::new(file);
@@ -1288,6 +1289,7 @@ async fn run_logs(initial_lines: usize) -> anyhow::Result<()> {
                             continue;
                         }
                         let trimmed = line_buf.trim_end();
+                        #[allow(clippy::collapsible_if)]
                         if !trimmed.is_empty() {
                             if tx.send(trimmed.to_string()).await.is_err() {
                                 break;
@@ -1372,6 +1374,7 @@ async fn run_logs(initial_lines: usize) -> anyhow::Result<()> {
             f.render_stateful_widget(logs_list, chunks[1], &mut list_state);
         })?;
 
+        #[allow(clippy::collapsible_if)]
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {

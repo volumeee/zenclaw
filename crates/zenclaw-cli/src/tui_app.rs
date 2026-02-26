@@ -47,6 +47,12 @@ pub struct App<'a> {
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+impl<'a> Default for App<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> App<'a> {
     pub fn new() -> Self {
         let mut textarea = TextArea::default();
@@ -95,6 +101,7 @@ pub async fn run_tui(
     let tx_input = tx.clone();
     tokio::task::spawn_blocking(move || {
         loop {
+            #[allow(clippy::collapsible_if)]
             if ratatui::crossterm::event::poll(Duration::from_millis(200)).unwrap_or(false) {
                 if let Ok(event) = ratatui::crossterm::event::read() {
                     let _ = tx_input.blocking_send(AppEvent::Terminal(event));
@@ -123,6 +130,7 @@ pub async fn run_tui(
                     app.spinner_idx = (app.spinner_idx + 1) % SPINNER.len();
                     
                     // Progressive streaming effect for the last message
+                    #[allow(clippy::collapsible_if)]
                     if let Some(msg) = app.messages.last_mut() {
                         if !msg.is_fully_loaded {
                             msg.displayed_length += 20; // Show 20 chars per tick (approx 200 chars/sec)
@@ -274,7 +282,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     // Calculate required height based on content + 2 for borders
     let max_height = f.area().height.saturating_sub(10); // leave space for chat
     let desired_height = std::cmp::max(3, input_lines + 2); // At least 3 lines
-    let actual_height = std::cmp::max(3, std::cmp::min(15, std::cmp::min(desired_height, max_height)));
+    let actual_height = std::cmp::min(desired_height, max_height).clamp(3, 15);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
