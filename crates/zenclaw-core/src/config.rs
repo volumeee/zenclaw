@@ -55,6 +55,7 @@ impl Default for AgentSettings {
 pub struct ChannelSettings {
     pub telegram: Option<TelegramConfig>,
     pub discord: Option<DiscordConfig>,
+    pub slack: Option<SlackConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +70,13 @@ pub struct DiscordConfig {
     pub bot_token: String,
     #[serde(default)]
     pub allowed_users: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackConfig {
+    pub bot_token: String,
+    #[serde(default)]
+    pub allowed_channels: Vec<String>,
 }
 
 impl ZenClawConfig {

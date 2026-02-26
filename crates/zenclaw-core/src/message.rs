@@ -92,6 +92,8 @@ pub enum Role {
 pub struct ChatMessage {
     pub role: Role,
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,6 +107,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             content: Some(content.to_string()),
+            media: Vec::new(),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -115,6 +118,18 @@ impl ChatMessage {
         Self {
             role: Role::User,
             content: Some(content.to_string()),
+            media: Vec::new(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    pub fn user_with_media(content: &str, media: Vec<String>) -> Self {
+        Self {
+            role: Role::User,
+            content: Some(content.to_string()),
+            media,
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -125,6 +140,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: Some(content.to_string()),
+            media: Vec::new(),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -135,6 +151,7 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.map(|s| s.to_string()),
+            media: Vec::new(),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
             name: None,
@@ -145,6 +162,7 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: Some(result.to_string()),
+            media: Vec::new(),
             tool_calls: None,
             tool_call_id: Some(call_id.to_string()),
             name: Some(name.to_string()),

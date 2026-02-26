@@ -5,6 +5,7 @@
 
 use rusqlite::{params, Connection};
 use std::path::Path;
+use std::sync::Mutex;
 
 use zenclaw_core::error::{Result, ZenClawError};
 
@@ -20,7 +21,7 @@ pub struct Document {
 
 /// RAG store — full-text search powered by SQLite FTS5.
 pub struct RagStore {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
 impl RagStore {
@@ -29,6 +30,20 @@ impl RagStore {
         let conn = Connection::open(path)
             .map_err(|e| ZenClawError::Memory(format!("RAG DB open failed: {}", e)))?;
 
+        Self::init_schema(&conn)?;
+        Ok(Self { conn: Mutex::new(conn) })
+    }
+
+    /// Create an in-memory RAG store (for testing).
+    pub fn in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()
+            .map_err(|e| ZenClawError::Memory(format!("RAG DB memory open failed: {}", e)))?;
+
+        Self::init_schema(&conn)?;
+        Ok(Self { conn: Mutex::new(conn) })
+    }
+
+    fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,20 +80,19 @@ impl RagStore {
             END;",
         )
         .map_err(|e| ZenClawError::Memory(format!("RAG schema creation failed: {}", e)))?;
-
-        Ok(Self { conn })
+        Ok(())
     }
 
     /// Index a document for search.
     pub fn index(&self, source: &str, content: &str, metadata: &str) -> Result<i64> {
-        self.conn
-            .execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
                 "INSERT INTO documents (source, content, metadata) VALUES (?1, ?2, ?3)",
                 params![source, content, metadata],
             )
             .map_err(|e| ZenClawError::Memory(format!("RAG index failed: {}", e)))?;
 
-        Ok(self.conn.last_insert_rowid())
+        Ok(conn.last_insert_rowid())
     }
 
     /// Index a long text by splitting into chunks.
@@ -103,8 +117,8 @@ impl RagStore {
 
     /// Search for relevant documents.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Document>> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
             .prepare(
                 "SELECT d.id, d.source, d.content, d.metadata, rank
                  FROM documents_fts
@@ -134,8 +148,8 @@ impl RagStore {
 
     /// Get document count.
     pub fn count(&self) -> Result<usize> {
-        let count: i64 = self
-            .conn
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM documents", [], |row| row.get(0))
             .map_err(|e| ZenClawError::Memory(format!("RAG count failed: {}", e)))?;
         Ok(count as usize)
@@ -143,8 +157,8 @@ impl RagStore {
 
     /// Delete documents by source.
     pub fn delete_by_source(&self, source: &str) -> Result<usize> {
-        let deleted = self
-            .conn
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn
             .execute("DELETE FROM documents WHERE source = ?1", params![source])
             .map_err(|e| ZenClawError::Memory(format!("RAG delete failed: {}", e)))?;
         Ok(deleted)

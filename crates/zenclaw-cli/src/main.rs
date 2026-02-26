@@ -136,6 +136,29 @@ enum Commands {
         api_key: Option<String>,
     },
 
+    /// 👔 Start Slack bot
+    Slack {
+        /// Slack bot token (xoxb-...)
+        #[arg(short, long, env = "SLACK_BOT_TOKEN")]
+        token: Option<String>,
+
+        /// Model to use
+        #[arg(short, long)]
+        model: Option<String>,
+
+        /// Provider
+        #[arg(short, long)]
+        provider: Option<String>,
+
+        /// API key
+        #[arg(short = 'k', long)]
+        api_key: Option<String>,
+
+        /// Allowed Slack channel IDs (comma-separated)
+        #[arg(long)]
+        allowed_channels: Option<String>,
+    },
+
     /// 📚 List and manage skills
     Skills {
         #[command(subcommand)]
@@ -535,6 +558,24 @@ async fn main() -> anyhow::Result<()> {
                 provider.as_deref(),
                 model.as_deref(),
                 api_key.as_deref(),
+            )
+            .await?;
+        }
+
+        // ─── Slack Bot ────────────────────────────────
+        Some(Commands::Slack {
+            token,
+            model,
+            provider,
+            api_key,
+            allowed_channels,
+        }) => {
+            run_slack(
+                token.as_deref(),
+                provider.as_deref(),
+                model.as_deref(),
+                api_key.as_deref(),
+                allowed_channels.as_deref(),
             )
             .await?;
         }
@@ -1012,6 +1053,65 @@ async fn run_discord(
     println!("\n{}", "🛑 Shutting down...".yellow());
     discord.stop().await;
     println!("{}", "👋 Goodbye!".cyan());
+
+    Ok(())
+}
+
+async fn run_slack(
+    bot_token: Option<&str>,
+    provider_name: Option<&str>,
+    model: Option<&str>,
+    api_key: Option<&str>,
+    allowed_channels: Option<&str>,
+) -> anyhow::Result<()> {
+    // 1. Setup minimal environment
+    let (agent, provider, memory, provider_name, model) = setup_bot_env(
+        provider_name,
+        model,
+        api_key,
+        None,
+        None
+    ).await?;
+
+    let cfg = ZenClawConfig::load(&ZenClawConfig::default_path()).unwrap_or_default();
+    let bot_token = bot_token
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            cfg.channels.slack.as_ref().map(|s| s.bot_token.clone()).unwrap_or_default()
+        });
+
+    if bot_token.is_empty() {
+        println!("{}", "❌ Error: Slack bot token not specified".red());
+        println!("Pass with --token <TOKEN>, set SLACK_BOT_TOKEN env var, or run setup.");
+        return Ok(());
+    }
+
+    let allowed_channels = allowed_channels
+        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
+
+    ui::print_banner();
+    println!("  {} {}", "Mode:".dimmed(), "👔 Slack Bot".blue().bold());
+    println!("  {} {}", "Provider:".dimmed(), provider_name.cyan());
+    println!("  {} {}", "Model:".dimmed(), model.green());
+
+    let config = zenclaw_hub::channels::SlackConfig {
+        bot_token,
+        allowed_channels,
+    };
+
+    let provider = Arc::new(provider);
+    let agent = Arc::new(agent);
+    let memory = Arc::new(memory);
+
+    let mut slack = zenclaw_hub::channels::SlackChannel::new(config);
+    slack.start(agent, provider, memory).await?;
+
+    // Keep running until Ctrl-C
+    println!("\n  {} {}", "Bot is running!".green().bold(), "(Press Ctrl+C to stop)");
+    tokio::signal::ctrl_c().await?;
+    slack.stop().await;
+    println!("\n{}", "🛑 Shutting down...".yellow());
 
     Ok(())
 }

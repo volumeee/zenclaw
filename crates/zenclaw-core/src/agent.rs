@@ -80,14 +80,42 @@ impl Agent {
         session_key: &str,
         bus: Option<&EventBus>,
     ) -> Result<String> {
+        self.process_with_media(provider, memory, user_message, Vec::new(), session_key, bus).await
+    }
+
+    /// Run the ReAct loop for a single user message containing a media payload.
+    pub async fn process_with_media(
+        &self,
+        provider: &dyn LlmProvider,
+        memory: &dyn MemoryStore,
+        user_message: &str,
+        media: Vec<String>,
+        session_key: &str,
+        bus: Option<&EventBus>,
+    ) -> Result<String> {
         // 1. Load conversation history
         let history = memory.get_history(session_key, 50).await?;
 
         // 2. Build initial messages
         let mut messages = Vec::new();
 
-        // System prompt
-        messages.push(ChatMessage::system(&self.config.system_prompt));
+        // System prompt & RAG Auto-Inject
+        let mut sys_prompt = self.config.system_prompt.clone();
+        if let Ok(Some(context)) = memory.search_knowledge(user_message, 3).await {
+            if !context.is_empty() {
+                sys_prompt.push_str("\n\n");
+                sys_prompt.push_str(&context);
+                
+                if let Some(b) = bus {
+                    b.publish_system(crate::bus::SystemEvent {
+                        run_id: session_key.to_string(),
+                        event_type: "rag_inject".into(),
+                        data: serde_json::json!({ "status": "RAG Context Injected" }),
+                    });
+                }
+            }
+        }
+        messages.push(ChatMessage::system(&sys_prompt));
 
         // Token Summarization Strategy (Context Window Control)
         // Keep calculating total string length to approximate tokens
@@ -118,7 +146,7 @@ impl Agent {
         messages.extend(history_to_keep);
 
         // Current user message
-        messages.push(ChatMessage::user(user_message));
+        messages.push(ChatMessage::user_with_media(user_message, media));
 
         // Get tool definitions
         let tool_defs = self.tools.definitions();

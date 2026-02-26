@@ -103,6 +103,18 @@ impl AgentRouter {
         message: &str,
         session_key: &str,
     ) -> Result<(String, String)> {
+        self.process_with_media(provider, memory, message, Vec::new(), session_key).await
+    }
+
+    /// Process a message with media payload through the router.
+    pub async fn process_with_media(
+        &self,
+        provider: &dyn LlmProvider,
+        memory: &dyn MemoryStore,
+        message: &str,
+        media: Vec<String>,
+        session_key: &str,
+    ) -> Result<(String, String)> {
         if self.agents.is_empty() {
             return Err(ZenClawError::Other(
                 "No agents registered in router".to_string(),
@@ -114,7 +126,7 @@ impl AgentRouter {
 
         let response = slot
             .agent
-            .process(provider, memory, message, session_key, None)
+            .process_with_media(provider, memory, message, media, session_key, None)
             .await?;
 
         Ok((slot.name.clone(), response))

@@ -178,7 +178,28 @@ impl LlmProvider for OpenAiProvider {
         let messages: Vec<serde_json::Value> = request
             .messages
             .iter()
-            .map(|m| serde_json::to_value(m).unwrap_or_default())
+            .map(|m| {
+                let mut val = serde_json::to_value(m).unwrap_or_default();
+                if let Some(obj) = val.as_object_mut() {
+                    // Remove internal media array from sending to LLM
+                    obj.remove("media");
+                    
+                    if !m.media.is_empty() {
+                        let mut parts = vec![];
+                        if let Some(text) = &m.content {
+                            parts.push(serde_json::json!({"type": "text", "text": text}));
+                        }
+                        for url in &m.media {
+                            parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": url }
+                            }));
+                        }
+                        obj.insert("content".to_string(), serde_json::json!(parts));
+                    }
+                }
+                val
+            })
             .collect();
 
         // Convert tools to API format

@@ -46,6 +46,8 @@ type SharedState = Arc<Mutex<ApiState>>;
 #[derive(Deserialize)]
 pub struct ChatRequest {
     pub message: String,
+    #[serde(default)]
+    pub media: Vec<String>,
     #[serde(default = "default_session")]
     pub session: String,
 }
@@ -139,7 +141,7 @@ async fn chat(
 
     match s
         .agent
-        .process(s.provider.as_ref(), s.memory.as_ref(), &req.message, &req.session, None)
+        .process_with_media(s.provider.as_ref(), s.memory.as_ref(), &req.message, req.media.clone(), &req.session, None)
         .await
     {
         Ok(response) => Ok(Json(ChatResponse {
@@ -173,6 +175,7 @@ async fn chat_stream(
     let shared_state = state.clone();
     let message = req.message.clone();
     let session = req.session.clone();
+    let media = req.media.clone();
 
     // Background task listening to EventBus
     let tx_clone = tx.clone();
@@ -199,7 +202,7 @@ async fn chat_stream(
         let p = s2.provider.as_ref();
         let m = s2.memory.as_ref();
 
-        match s2.agent.process(p, m, &message, &session, Some(&bus)).await {
+        match s2.agent.process_with_media(p, m, &message, media, &session, Some(&bus)).await {
             Ok(response) => {
                 let _ = tx_for_agent.send(Ok(Event::default().event("result").data(response))).await;
             }

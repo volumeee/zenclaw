@@ -14,6 +14,7 @@ use zenclaw_core::message::ChatMessage;
 /// Perfect for STB and embedded Linux — tiny footprint, no external services.
 pub struct SqliteMemory {
     conn: Mutex<Connection>,
+    rag: Option<crate::memory::RagStore>,
 }
 
 impl SqliteMemory {
@@ -45,8 +46,11 @@ impl SqliteMemory {
         )
         .map_err(|e| ZenClawError::Memory(format!("SQLite init error: {}", e)))?;
 
+        let rag = path.parent().map(|p| p.join("rag.db")).and_then(|p| crate::memory::RagStore::open(&p).ok());
+
         Ok(Self {
             conn: Mutex::new(conn),
+            rag,
         })
     }
 
@@ -77,8 +81,11 @@ impl SqliteMemory {
         )
         .map_err(|e| ZenClawError::Memory(format!("SQLite init error: {}", e)))?;
 
+        let rag = crate::memory::RagStore::in_memory().ok();
+
         Ok(Self {
             conn: Mutex::new(conn),
+            rag,
         })
     }
 }
@@ -117,6 +124,7 @@ impl MemoryStore for SqliteMemory {
                 Ok(ChatMessage {
                     role: role_enum,
                     content,
+                    media: Vec::new(),
                     tool_calls,
                     tool_call_id,
                     name,
@@ -233,5 +241,18 @@ impl MemoryStore for SqliteMemory {
             .collect();
 
         Ok(results)
+    }
+
+    async fn search_knowledge(&self, query: &str, limit: usize) -> Result<Option<String>> {
+        if let Some(rag) = &self.rag {
+            let context = rag.build_context(query, limit)?;
+            if context.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(context))
+            }
+        } else {
+            Ok(None)
+        }
     }
 }

@@ -65,7 +65,7 @@ ZenClaw drops the traditional messy CLI for a fully interactive Ratatui-based UI
 
 - **ReAct Loop:** Autonomous Think → Act → Observe reasoning loop.
 - **5 LLM Providers:** OpenAI, Google Gemini, Ollama, OpenRouter, and LM Studio.
-- **Built-in RAG:** Index files into SQLite FTS5 in seconds (No Vector DB needed).
+- **Built-in RAG & Auto-Inject:** Index files into SQLite FTS5 in seconds. The agent engine automatically searches and injects relevant context into the system prompt behind the scenes during conversations.
 - **Persistent Memory:** SQLite-backed conversational history context.
 - **Skills System:** Inject markdown files to shape the agent's behavior.
 </details>
@@ -76,18 +76,19 @@ ZenClaw drops the traditional messy CLI for a fully interactive Ratatui-based UI
 
 - `exec`, `read_file`, `write_file`, `edit_file`, `list_dir`
 - `web_fetch`, `web_search` (DuckDuckGo), `web_scrape` (Headless Chromium)
-- `cron` (scheduler), `system_info`, `health`, `history`, `index_file`, `env`
+- `cron` (Persistent background scheduler with autonomous **Proactive AI Agent Tasks**), `system_info`, `health`, `history`, `index_file`, `env`
 - **Plugin System:** Drop any Shell/Python script in the `plugins/` folder to create a new tool.
 </details>
 
 <details>
-<summary><b>📡 5 Communication Channels</b></summary>
+<summary><b>📡 6 Communication Channels</b></summary>
 <br>
 
 - **TUI Dashboard:** The primary interactive hub.
 - **REST API:** Axum server with Server-Sent Events (SSE) streaming.
 - **Telegram Bot:** Raw HTTP client via Telegram API.
 - **Discord Bot:** WebSocket gateway connection.
+- **Slack Bot:** Native integration via Slack Web API polling and editing.
 - **WhatsApp Web:** Secured via the accompanying Node.js Puppeteer bridge.
 </details>
 
@@ -139,14 +140,15 @@ zenclaw chat    # Jumps straight into a TUI chat session
 zenclaw logs    # Opens the live tail log monitor
 ```
 
-### Mode B: Discord & Telegram Bots
+### Mode B: Chat Bots (Discord, Telegram, Slack)
 
-Run ZenClaw as a fully autonomous assistant in your groups.
+Run ZenClaw as a fully autonomous assistant in your groups or workspaces.
 
 ```bash
 # Can be run entirely from the interactive TUI, or via CLI:
 zenclaw telegram --token "BOT_TOKEN_HERE"
 zenclaw discord --token "BOT_TOKEN_HERE"
+zenclaw slack --token "xoxb-BOT_TOKEN_HERE"
 ```
 
 ### Mode C: REST API Server
@@ -198,9 +200,9 @@ Shape the AI persona by placing `.md` files in `~/.local/share/zenclaw/skills/`.
 zenclaw chat --skill sysadmin
 ```
 
-### Built-in RAG
+### Built-in RAG & Auto-Inject
 
-Easily inject files into the agent's knowledge base.
+Easily inject files into the agent's knowledge base. Once indexed in SQLite, ZenClaw will automatically search this database on every chat turn and silently inject relevant context into the LLM's system prompt.
 
 ```bash
 # Ask the agent inside the TUI Chat:

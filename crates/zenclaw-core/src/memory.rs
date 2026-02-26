@@ -35,6 +35,11 @@ pub trait MemoryStore: Send + Sync {
 
     /// Search facts by keyword.
     async fn search_facts(&self, query: &str, limit: usize) -> Result<Vec<(String, String)>>;
+
+    /// Retrieve relevant knowledge context (e.g. from a RAG store) based on a query.
+    async fn search_knowledge(&self, _query: &str, _limit: usize) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// In-memory store for testing and lightweight usage.

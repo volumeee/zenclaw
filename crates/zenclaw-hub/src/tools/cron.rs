@@ -168,8 +168,9 @@ impl Tool for CronTool {
     fn description(&self) -> &str {
         "Background Task Scheduler. Creates persistent background processes. 
 Actions: 
-- 'schedule' (one-time execution after delay_seconds)
-- 'cron' (periodic execution using 7-field standard cron string e.g. '0 30 9 * * * *' : sec min hour dom mon dow year).
+- 'schedule' (one-time command execution after delay_seconds)
+- 'cron' (periodic command execution using 7-field standard cron string e.g. '0 30 9 * * * *' : sec min hour dom mon dow year).
+- 'agent_task' (periodic or scheduled execution of an AI agent task, prompt goes into 'command' param, uses cron_expression if provided otherwise delay)
 - 'list' (list all active/completed jobs)
 - 'delete' (delete a job via ID)."
     }
@@ -180,7 +181,7 @@ Actions:
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["schedule", "cron", "list", "delete"],
+                    "enum": ["schedule", "cron", "agent_task", "list", "delete"],
                     "description": "Action type"
                 },
                 "command": {
@@ -214,7 +215,7 @@ Actions:
             .map_err(|e: rusqlite::Error| zenclaw_core::error::ZenClawError::Other(format!("DB error: {}", e)))?;
 
         match action {
-            "schedule" | "cron" => {
+            "schedule" | "cron" | "agent_task" => {
                 let command = args["command"].as_str().unwrap_or("").to_string();
                 let desc = args["description"]
                     .as_str()
@@ -226,7 +227,7 @@ Actions:
                 }
 
                 let id = format!("task_{}", Utc::now().timestamp());
-                let (next_run, schedule_str) = if action == "cron" {
+                let (next_run, schedule_str) = if action == "cron" || (action == "agent_task" && args.get("cron_expression").is_some()) {
                     let expr = args["cron_expression"].as_str().unwrap_or("");
                     match Schedule::from_str(expr) {
                         Ok(sch) => {
@@ -241,10 +242,20 @@ Actions:
                     (Utc::now().timestamp() + delay as i64, None)
                 };
 
+                let final_command = if action == "agent_task" {
+                    // Prepend standard binary path
+                    let exe_path = std::env::current_exe()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| "zenclaw".to_string());
+                    format!("{} ask \"{}\"", exe_path, command.replace("\"", "\\\""))
+                } else {
+                    command
+                };
+
                 conn.execute(
                     "INSERT INTO cron_jobs (id, description, command, schedule, next_run, status) 
                      VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
-                    rusqlite::params![id, desc, command, schedule_str, next_run],
+                    rusqlite::params![id, desc, final_command, schedule_str, next_run],
                 ).map_err(|e| zenclaw_core::error::ZenClawError::Other(e.to_string()))?;
 
                 Ok(format!("✅ Scheduled: {}\n  ID: {}\n  Target: {}", desc, id, next_run))

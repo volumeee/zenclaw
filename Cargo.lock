@@ -4757,7 +4757,7 @@ dependencies = [
 
 [[package]]
 name = "zenclaw-cli"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4788,7 +4788,7 @@ dependencies = [
 
 [[package]]
 name = "zenclaw-core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4807,7 +4807,7 @@ dependencies = [
 
 [[package]]
 name = "zenclaw-hub"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "async-trait",
