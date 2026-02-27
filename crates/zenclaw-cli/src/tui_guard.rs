@@ -7,7 +7,7 @@ use ratatui::{
     backend::CrosstermBackend,
     crossterm::{
         execute,
-        event::{EnableMouseCapture, DisableMouseCapture},
+        event::{EnableMouseCapture, DisableMouseCapture, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags},
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     },
     Terminal,
@@ -32,7 +32,15 @@ impl TuiGuard {
     pub fn new() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(
+            stdout, 
+            EnterAlternateScreen, 
+            EnableMouseCapture,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES |
+                KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        )?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -42,7 +50,12 @@ impl TuiGuard {
 impl Drop for TuiGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(self.terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(
+            self.terminal.backend_mut(), 
+            LeaveAlternateScreen, 
+            DisableMouseCapture,
+            PopKeyboardEnhancementFlags
+        );
         let _ = self.terminal.show_cursor();
     }
 }

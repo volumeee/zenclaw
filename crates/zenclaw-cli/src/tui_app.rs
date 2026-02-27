@@ -1,6 +1,6 @@
 use ratatui::{
     backend::CrosstermBackend,
-    crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind},
+    crossterm::event::{Event, KeyCode, KeyModifiers, MouseEventKind, KeyEventKind},
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
@@ -517,13 +517,21 @@ pub async fn run_tui(
                         }
                     }
 
-                    // ── Enter / Ctrl+Enter Handling ──
+                    // Filter out release events if enhancement protocol is active
+                    if key.kind == KeyEventKind::Release {
+                        continue;
+                    }
+
+                    // ── Enter / Send Handling ──
                     let is_enter = matches!(key.code, KeyCode::Enter | KeyCode::Char('\n') | KeyCode::Char('\r'));
                     let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    let has_alt = key.modifiers.contains(KeyModifiers::ALT);
 
-                    if is_enter {
-                        if has_ctrl {
-                            // Ctrl+Enter → Send
+                    let is_ctrl_s = key.code == KeyCode::Char('s') && has_ctrl;
+
+                    if is_enter || is_ctrl_s {
+                        if has_ctrl || has_alt || is_ctrl_s {
+                            // Ctrl+Enter, Alt+Enter, or Ctrl+S → Send
                             if !app.is_processing {
                                 let text = app.textarea.lines().join("\n").trim().to_string();
                                 if !text.is_empty() {
@@ -772,7 +780,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     let help_text = if app.is_processing {
         "[Ctrl+C] Cancel │ [Ctrl+↑↓] Scroll "
     } else {
-        "[Ctrl+Enter] Send │ [Enter] New Line │ [Ctrl+C] Quit │ [Ctrl+Y] Copy "
+        "[Ctrl+Enter/S] Send │ [Enter] New Line │ [Ctrl+C] Quit │ [Ctrl+Y] Copy "
     };
 
     let mut textarea = app.textarea.clone();
