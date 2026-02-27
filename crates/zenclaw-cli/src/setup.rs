@@ -1,7 +1,6 @@
 //! Interactive setup wizard — beautiful TUI for configuring ZenClaw.
 
 use colored::*;
-use dialoguer::{theme::ColorfulTheme, Password, Input};
 use std::path::PathBuf;
 
 use zenclaw_core::config::ZenClawConfig;
@@ -122,7 +121,6 @@ const PROVIDERS: &[ProviderInfo] = &[
 
 /// Run the interactive setup wizard.
 pub fn run_setup() -> anyhow::Result<()> {
-    let theme = ColorfulTheme::default();
     ui::print_setup_banner();
 
     loop {
@@ -163,11 +161,9 @@ pub fn run_setup() -> anyhow::Result<()> {
         let final_api_base = if provider.name == "custom" {
             println!();
             println!("  {} {}", "Step 2".green().bold(), "Custom API Base URL:".bold());
-            let base: String = Input::with_theme(&theme)
-                .with_prompt("  API Base")
-                .default(provider.api_base.unwrap_or("http://localhost:8045/v1").to_string())
-                .interact_text()?;
-            Some(base)
+            let def = provider.api_base.unwrap_or("http://localhost:8045/v1");
+            let base = crate::tui_menu::run_tui_input("Set Custom API Base URL", "Enter API Base URL:", def, false)?;
+            Some(base.unwrap_or_else(|| def.to_string()))
         } else {
             provider.api_base.map(|s: &str| s.to_string())
         };
@@ -197,9 +193,12 @@ pub fn run_setup() -> anyhow::Result<()> {
             );
             println!();
 
-            let key: String = Password::with_theme(&theme)
-                .with_prompt("  API Key (Press Enter if none)")
-                .interact()?;
+            let key = crate::tui_menu::run_tui_input(
+                &format!("Enter {} API Key", provider.name),
+                "API Key (Press Enter if none):",
+                "",
+                true
+            )?.unwrap_or_default();
 
             if key.trim().is_empty() {
                 println!(
@@ -231,11 +230,8 @@ pub fn run_setup() -> anyhow::Result<()> {
         println!();
 
         let model = if provider.name == "custom" {
-            let m: String = Input::with_theme(&theme)
-                .with_prompt("  Custom Model Name")
-                .default("custom-model".to_string())
-                .interact_text()?;
-            m
+            let m = crate::tui_menu::run_tui_input("Custom Model Name", "Enter model name:", "custom-model", false)?;
+            m.unwrap_or_else(|| "custom-model".to_string())
         } else {
             let mut model_items = vec![];
             for (i, m) in provider.models.iter().enumerate() {
@@ -327,6 +323,24 @@ pub fn run_config_set(key: &str, value: &str) -> anyhow::Result<()> {
             );
             tg.bot_token = value.to_string();
         }
+        "discord_token" => {
+            let dc = config.channels.discord.get_or_insert(
+                zenclaw_core::config::DiscordConfig {
+                    bot_token: String::new(),
+                    allowed_users: vec![],
+                },
+            );
+            dc.bot_token = value.to_string();
+        }
+        "slack_token" => {
+            let sl = config.channels.slack.get_or_insert(
+                zenclaw_core::config::SlackConfig {
+                    bot_token: String::new(),
+                    allowed_channels: vec![],
+                },
+            );
+            sl.bot_token = value.to_string();
+        }
         _ => {
             println!("{} Unknown key: {}", "Error:".red(), key);
             println!("\nAvailable keys:");
@@ -338,6 +352,8 @@ pub fn run_config_set(key: &str, value: &str) -> anyhow::Result<()> {
                 "max_iterations",
                 "system_prompt",
                 "telegram_token",
+                "discord_token",
+                "slack_token",
             ] {
                 println!("  • {}", k.cyan());
             }
@@ -457,6 +473,32 @@ pub fn run_config_show() -> anyhow::Result<()> {
                 "••••••••(set)".green()
             }
         );
+    } else {
+        println!(
+            "  {} {} = {}",
+            "│".dimmed(),
+            "discord".cyan(),
+            "(not configured)".dimmed()
+        );
+    }
+    if let Some(ref sl) = config.channels.slack {
+        println!(
+            "  {} {} = {}",
+            "│".dimmed(),
+            "slack".cyan(),
+            if sl.bot_token.is_empty() {
+                "(not set)".red()
+            } else {
+                "••••••••(set)".green()
+            }
+        );
+    } else {
+        println!(
+            "  {} {} = {}",
+            "│".dimmed(),
+            "slack".cyan(),
+            "(not configured)".dimmed()
+        );
     }
     println!("  {}", "└───────────────────────────────".dimmed());
     println!();
@@ -484,7 +526,6 @@ pub fn data_dir() -> PathBuf {
 /// Run an interactive model switcher and return the selected provider configurations if completing smoothly.
 #[allow(clippy::type_complexity)]
 pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<String>, Option<String>)>> {
-    let theme = ColorfulTheme::default();
     let mut config = load_saved_config().unwrap_or_default();
 
     loop {
@@ -514,15 +555,13 @@ pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<Str
         let provider = &PROVIDERS[provider_idx];
 
         let (final_api_base, model) = if provider.name == "custom" {
-            let base: String = Input::with_theme(&theme)
-                .with_prompt("Custom API Base URL")
-                .default(config.provider.api_base.clone().unwrap_or_else(|| "http://localhost:8045/v1".to_string()))
-                .interact_text()?;
+            let def_base = config.provider.api_base.as_deref().unwrap_or("http://localhost:8045/v1");
+            let base = crate::tui_menu::run_tui_input("Set Custom API Base URL", "Enter API Base URL:", def_base, false)?
+                .unwrap_or_else(|| def_base.to_string());
                 
-            let m: String = Input::with_theme(&theme)
-                .with_prompt("Custom Model Name")
-                .default(if config.provider.provider == "custom" { config.provider.model.clone() } else { "custom-model".to_string() })
-                .interact_text()?;
+            let def_model = if config.provider.provider == "custom" { config.provider.model.clone() } else { "custom-model".to_string() };
+            let m = crate::tui_menu::run_tui_input("Custom Model Name", "Enter model name:", &def_model, false)?
+                .unwrap_or_else(|| def_model);
                 
             (Some(base), m)
         } else {
@@ -577,9 +616,12 @@ pub fn run_model_switcher() -> anyhow::Result<Option<(String, String, Option<Str
                          }).dimmed());
                 println!();
                 
-                let key: String = Password::with_theme(&theme)
-                    .with_prompt("  Enter API Key (Press Enter to skip)")
-                    .interact()?;
+                let key = crate::tui_menu::run_tui_input(
+                    "API Key Required",
+                    "Enter API Key (Press Enter to skip)",
+                    "",
+                    true
+                )?.unwrap_or_default();
                 
                 if key.trim().is_empty() {
                     if provider.name == "custom" {

@@ -14,8 +14,9 @@
 //! You can use any Baileys-based bridge, e.g. whatsapp-web.js or wa-automate-nodejs.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use zenclaw_core::agent::Agent;
@@ -40,12 +41,7 @@ pub struct WaMessage {
     pub sender_name: Option<String>,
 }
 
-/// Send message request.
-#[derive(Debug, Serialize)]
-struct WaSendRequest {
-    to: String,
-    message: String,
-}
+
 
 /// WhatsApp channel adapter.
 pub struct WhatsAppChannel {
@@ -53,6 +49,7 @@ pub struct WhatsAppChannel {
     client: reqwest::Client,
     allowed_numbers: Option<HashSet<String>>,
     poll_interval_ms: u64,
+    shutdown_tx: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl WhatsAppChannel {
@@ -62,6 +59,7 @@ impl WhatsAppChannel {
             client: reqwest::Client::new(),
             allowed_numbers: None,
             poll_interval_ms: 2000,
+            shutdown_tx: None,
         }
     }
 
@@ -77,154 +75,158 @@ impl WhatsAppChannel {
         self
     }
 
-    /// Check if a number is allowed.
-    fn is_allowed(&self, number: &str) -> bool {
-        match &self.allowed_numbers {
-            Some(allowed) => allowed.contains(number),
-            None => true,
-        }
-    }
-
-    /// Poll for new messages from the bridge.
-    async fn poll_messages(&self) -> Result<Vec<WaMessage>> {
-        let url = format!("{}/messages", self.bridge_url);
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| ZenClawError::Other(format!("WhatsApp poll failed: {}", e)))?;
-
-        if !resp.status().is_success() {
-            return Ok(Vec::new());
-        }
-
-        let messages: Vec<WaMessage> = resp
-            .json()
-            .await
-            .unwrap_or_default();
-
-        Ok(messages)
-    }
-
-    /// Send a message via the bridge.
-    async fn send_message(&self, to: &str, message: &str) -> Result<()> {
-        let url = format!("{}/send", self.bridge_url);
-        let body = WaSendRequest {
-            to: to.to_string(),
-            message: message.to_string(),
-        };
-
-        self.client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ZenClawError::Other(format!("WhatsApp send failed: {}", e)))?;
-
-        Ok(())
-    }
-
-    /// Start the WhatsApp bot loop.
+    /// Start the WhatsApp bot loop — runs in background, returns immediately.
     pub async fn start(
-        &self,
-        agent: &Agent,
-        provider: &dyn LlmProvider,
-        memory: &dyn MemoryStore,
+        &mut self,
+        agent: Arc<Agent>,
+        provider: Arc<dyn LlmProvider>,
+        memory: Arc<dyn MemoryStore>,
+        log_tx: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<()> {
         info!("📱 WhatsApp bot starting...");
         info!("🔗 Bridge: {}", self.bridge_url);
 
-        // Check bridge connectivity. If down, start embedded bridge.
-        match self.client.get(format!("{}/status", self.bridge_url)).send().await {
+        // Check bridge connectivity. 
+        let is_ready = match self.client.get(format!("{}/status", self.bridge_url)).send().await {
             Ok(resp) if resp.status().is_success() => {
-                info!("✅ Bridge connected");
+                if let Ok(status) = resp.json::<serde_json::Value>().await {
+                    status["ready"].as_bool().unwrap_or(false)
+                } else {
+                    false
+                }
             }
-            _ => {
-                warn!("⚠️ External bridge not reachable. Spawning built-in WhatsApp Web bridge...");
-                
-                let mut child = Command::new("node")
-                    .arg("bridge/bridge.js")
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|e| ZenClawError::Other(format!("Failed to spawn bridge: {}. Is Node.js installed?", e)))?;
-                
-                let stdout = child.stdout.take().unwrap();
-                let stderr = child.stderr.take().unwrap();
-                
-                tokio::spawn(async move {
-                    let mut reader = BufReader::new(stdout).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        println!("{}", line);
-                    }
-                });
+            _ => false,
+        };
 
-                tokio::spawn(async move {
-                    let mut reader = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        eprintln!("{}", line);
-                    }
-                });
-                
-                info!("⏳ Waiting for bridge to initialize...");
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            }
-        }
-
-        if let Some(ref allowed) = self.allowed_numbers {
-            info!("🔒 Allowed numbers: {:?}", allowed);
+        if is_ready {
+            info!("✅ Bridge connected and ready");
         } else {
-            info!("🔓 All numbers allowed");
+            if let Some(ref tx) = log_tx {
+                let _ = tx.send("🔄 Restarting WhatsApp Bridge...".to_string()).await;
+                let _ = tx.send("⏳ Waiting for port 3001 to clear...".to_string()).await;
+            }
+            warn!("⚠️ WhatsApp Bridge not ready or reachable. Restarting embedded bridge to capture QR code...");
+            
+            // Kill any existing bridge process to ensure we capture stdout
+            let _ = std::process::Command::new("pkill")
+                .arg("-9") // Force kill
+                .arg("-f")
+                .arg("bridge/bridge.js")
+                .status();
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+
+            if let Some(ref tx) = log_tx {
+                let _ = tx.send("🚀 Spawning new bridge process...".to_string()).await;
+            }
+
+            let mut child = Command::new("node")
+                .arg("bridge/bridge.js")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| ZenClawError::Other(format!("Failed to spawn bridge: {}. Is Node.js installed?", e)))?;
+            
+            let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+            
+            let log_tx_stdout = log_tx.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if let Some(ref tx) = log_tx_stdout {
+                        let _ = tx.send(line.clone()).await;
+                    }
+                    info!("[Bridge] {}", line);
+                }
+            });
+
+            let log_tx_stderr = log_tx.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    if let Some(ref tx) = log_tx_stderr {
+                        let _ = tx.send(format!("ERROR: {}", line)).await;
+                    }
+                    warn!("[Bridge Error] {}", line);
+                }
+            });
+            
+            info!("⏳ Waiting for bridge to initialize...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
 
-        loop {
-            match self.poll_messages().await {
-                Ok(messages) => {
-                    for msg in messages {
-                        // Skip non-allowed
-                        if !self.is_allowed(&msg.from) {
-                            continue;
-                        }
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+        self.shutdown_tx = Some(shutdown_tx);
 
-                        let sender = msg.sender_name.as_deref().unwrap_or(&msg.from);
-                        info!("📩 [{}] {}", sender, msg.body);
+        let bridge_url = self.bridge_url.clone();
+        let client = self.client.clone();
+        let allowed_numbers = self.allowed_numbers.clone();
+        let poll_interval_ms = self.poll_interval_ms;
 
-                        // Process with agent
-                        let session_key = format!("wa_{}", msg.from);
+        // Clone shared app components
+        let agent = agent.clone();
+        let provider = provider.clone();
+        let memory = memory.clone();
 
-                        match agent
-                            .process(provider, memory, &msg.body, &session_key, None)
-                            .await
-                        {
-                            Ok(response) => {
-                                info!("📤 → {}: {}...",
-                                    sender,
-                                    if response.len() > 80 { &response[..80] } else { &response }
-                                );
+        tokio::spawn(async move {
+            loop {
+                // Check shutdown
+                if shutdown_rx.try_recv().is_ok() {
+                    info!("WhatsApp bot shutting down...");
+                    break;
+                }
 
-                                if let Err(e) = self.send_message(&msg.from, &response).await {
-                                    error!("Failed to send message: {}", e);
+                let poll_url = format!("{}/messages", bridge_url);
+                match client.get(&poll_url).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(messages) = resp.json::<Vec<WaMessage>>().await {
+                            for msg in messages {
+                                // Skip non-allowed
+                                let is_allowed = match &allowed_numbers {
+                                    Some(allowed) => allowed.contains(&msg.from),
+                                    None => true,
+                                };
+                                if !is_allowed { continue; }
+
+                                let sender = msg.sender_name.as_deref().unwrap_or(&msg.from);
+                                info!("📩 [WhatsApp] {}: {}", sender, msg.body);
+
+                                let session_key = format!("wa_{}", msg.from);
+                                let provider_ref = provider.as_ref();
+                                let memory_ref = memory.as_ref();
+
+                                match agent.process(provider_ref, memory_ref, &msg.body, &session_key, None).await {
+                                    Ok(response) => {
+                                        info!("📤 → {}: {}...", sender, if response.len() > 80 { &response[..80] } else { &response });
+                                        let send_url = format!("{}/send", bridge_url);
+                                        let _ = client.post(&send_url).json(&serde_json::json!({ "to": msg.from, "message": response })).send().await;
+                                    }
+                                    Err(e) => {
+                                        error!("Agent error for {}: {}", sender, e);
+                                        let send_url = format!("{}/send", bridge_url);
+                                        let _ = client.post(&send_url).json(&serde_json::json!({ "to": msg.from, "message": format!("❌ Error: {}", e) })).send().await;
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                error!("Agent error for {}: {}", sender, e);
-                                let _ = self
-                                    .send_message(
-                                        &msg.from,
-                                        &format!("❌ Error: {}", e),
-                                    )
-                                    .await;
-                            }
                         }
                     }
+                    _ => {
+                        error!("Bridge unreachable at {}", bridge_url);
+                    }
                 }
-                Err(e) => {
-                    error!("Poll error: {}", e);
-                }
-            }
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(self.poll_interval_ms)).await;
+                tokio::time::sleep(tokio::time::Duration::from_millis(poll_interval_ms)).await;
+            }
+        });
+
+        Ok(())
+    }
+
+    pub async fn stop(&mut self) {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(()).await;
         }
     }
 }
+

@@ -205,6 +205,28 @@ You are a talented creative writer. When creating content:
     pub fn dir(&self) -> &Path {
         &self.skills_dir
     }
+
+    /// Save a skill to disk.
+    pub async fn save_skill(&mut self, name: &str, title: &str, description: &str, content: &str) -> Result<()> {
+        let path = self.skills_dir.join(format!("{}.md", name));
+        let full_content = format!(
+            "---\ntitle: {}\ndescription: {}\n---\n\n{}",
+            title, description, content
+        );
+        fs::write(&path, full_content).await?;
+        self.load_all().await?;
+        Ok(())
+    }
+
+    /// Delete a skill from disk.
+    pub async fn delete_skill(&mut self, name: &str) -> Result<()> {
+        let path = self.skills_dir.join(format!("{}.md", name));
+        if path.exists() {
+            fs::remove_file(path).await?;
+        }
+        self.load_all().await?;
+        Ok(())
+    }
 }
 
 /// Parse YAML frontmatter from markdown.

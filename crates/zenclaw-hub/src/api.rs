@@ -32,11 +32,12 @@ use zenclaw_core::bus::EventBus;
 use crate::memory::RagStore;
 
 /// Shared API state.
+#[derive(Clone)]
 pub struct ApiState {
-    pub agent: Agent,
-    pub provider: Box<dyn LlmProvider>,
-    pub memory: Box<dyn MemoryStore>,
-    pub rag: Option<RagStore>,
+    pub agent: Arc<Agent>,
+    pub provider: Arc<dyn LlmProvider>,
+    pub memory: Arc<dyn MemoryStore>,
+    pub rag: Option<Arc<RagStore>>,
 }
 
 type SharedState = Arc<Mutex<ApiState>>;
@@ -297,7 +298,7 @@ pub fn build_router(state: SharedState) -> Router {
 }
 
 /// Start the API server.
-pub async fn start_server(state: ApiState, host: &str, port: u16) -> anyhow::Result<()> {
+pub async fn start_server_from_state(state: ApiState, host: &str, port: u16) -> anyhow::Result<()> {
     let shared = Arc::new(Mutex::new(state));
     let app = build_router(shared);
 

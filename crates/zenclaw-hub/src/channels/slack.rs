@@ -269,7 +269,6 @@ struct SlackMessage {
 
 #[derive(Debug, Deserialize)]
 struct SlackPostResponse {
-    ok: bool,
     ts: Option<String>,
 }
 

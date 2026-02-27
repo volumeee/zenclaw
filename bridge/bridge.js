@@ -14,14 +14,17 @@ const client = new Client({
 });
 
 let messagesBuffer = [];
+let lastQr = null;
 
 client.on("qr", (qr) => {
+  lastQr = qr;
   // Generate and scan this code with your phone
   console.log("SCAN THIS QR CODE WITH WHATSAPP:");
   qrcode.generate(qr, { small: true });
 });
 
 client.on("ready", () => {
+  lastQr = null;
   console.log("✅ WhatsApp Bridge is ready!");
 });
 
@@ -84,8 +87,13 @@ app.get("/status", (req, res) => {
   res.json({ status: "ok", ready: client.info ? true : false });
 });
 
+app.get("/qr", (req, res) => {
+  res.json({ qr: lastQr });
+});
+
 app.listen(3001, () => {
   console.log("🔗 Bridge HTTP server running on port 3001");
 });
 
+console.log("🚀 WhatsApp Bridge initializing...");
 client.initialize();

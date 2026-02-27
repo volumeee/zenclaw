@@ -23,8 +23,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = { workspace = true }
 toml = { workspace = true }
-dialoguer = { workspace = true, features = ["fuzzy-select"] }
-console = { workspace = true }
 chrono = { workspace = true }
 tracing-appender = "0.2"
 termimad = "0.34.1"
