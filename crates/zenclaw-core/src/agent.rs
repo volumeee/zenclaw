@@ -27,6 +27,15 @@ pub struct ProcessOptions {
     pub response_format: Option<String>,
 }
 
+/// Structured metrics for tool executions within a single process run.
+#[derive(Debug, Clone, Default)]
+pub struct ToolMetrics {
+    pub invocations: usize,
+    pub successes: usize,
+    pub errors: usize,
+    pub timeouts: usize,
+}
+
 /// Configuration for the agent loop.
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
@@ -112,6 +121,7 @@ impl Agent {
 
         // 2. Build initial messages
         let mut messages = Vec::new();
+        let mut tool_metrics = ToolMetrics::default();
 
         // System prompt — use per-request override if provided, else config default
         let mut sys_prompt = opts.system_prompt
@@ -509,6 +519,15 @@ impl Agent {
 
                 // Add tool results to messages
                 for (call, result) in results {
+                    tool_metrics.invocations += 1;
+                    if result.starts_with("Error: Tool execution timed out") {
+                        tool_metrics.timeouts += 1;
+                    } else if result.starts_with("Tool Execution Error:") {
+                        tool_metrics.errors += 1;
+                    } else {
+                        tool_metrics.successes += 1;
+                    }
+
                     messages.push(ChatMessage::tool_result(
                         &call.id,
                         &call.function.name,
@@ -920,6 +939,13 @@ Respond with EXACTLY this JSON format (no other text):
             iterations,
             final_response.len()
         );
+
+        if tool_metrics.invocations > 0 {
+            tracing::info!(
+                "Tool Metrics - Invocations: {}, Successes: {}, Errors: {}, Timeouts: {}",
+                tool_metrics.invocations, tool_metrics.successes, tool_metrics.errors, tool_metrics.timeouts
+            );
+        }
 
         Ok(final_response)
     }

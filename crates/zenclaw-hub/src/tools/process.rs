@@ -51,20 +51,22 @@ impl std::fmt::Display for ProcessStatus {
 pub struct ProcessTool {
     processes: Arc<Mutex<HashMap<String, ManagedProcess>>>,
     max_output_size: usize,
+    allow_command_exec: bool,
 }
 
 impl ProcessTool {
-    pub fn new() -> Self {
+    pub fn new(allow_command_exec: bool) -> Self {
         Self {
             processes: Arc::new(Mutex::new(HashMap::new())),
             max_output_size: 50_000,
+            allow_command_exec,
         }
     }
 }
 
 impl Default for ProcessTool {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
@@ -114,6 +116,13 @@ Actions:
 
         match action {
             "spawn" => {
+                if !self.allow_command_exec {
+                    return Err(zenclaw_core::error::ZenClawError::ToolExecution {
+                        tool: "process".to_string(),
+                        message: "Process execution disabled by policy. Set ZENCLAW_ALLOW_COMMAND_EXEC=1 to enable.".to_string(),
+                    });
+                }
+
                 let command_str = args["command"].as_str().unwrap_or("").to_string();
                 if command_str.is_empty() {
                     return Ok("Error: 'command' required for spawning.".into());
@@ -183,8 +192,27 @@ Actions:
                             }
                         };
 
-                        let stdout = child_process.stdout.take().unwrap();
-                        let stderr = child_process.stderr.take().unwrap();
+                        let stdout = match child_process.stdout.take() {
+                            Some(s) => s,
+                            None => {
+                                let mut map = processes.lock().await;
+                                if let Some(p) = map.get_mut(&id_clone) {
+                                    p.status = ProcessStatus::Failed("Failed to capture stdout stream".to_string());
+                                }
+                                if auto_restart { continue; } else { return; }
+                            }
+                        };
+                        
+                        let stderr = match child_process.stderr.take() {
+                            Some(s) => s,
+                            None => {
+                                let mut map = processes.lock().await;
+                                if let Some(p) = map.get_mut(&id_clone) {
+                                    p.status = ProcessStatus::Failed("Failed to capture stderr stream".to_string());
+                                }
+                                if auto_restart { continue; } else { return; }
+                            }
+                        };
 
                         let out_ref1 = output_clone.clone();
                         let out_ref2 = output_clone.clone();

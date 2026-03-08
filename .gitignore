@@ -5,3 +5,4 @@
 *.db
 /dist
 .wwebjs_auth/
+.nuzli/

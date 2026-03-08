@@ -14,13 +14,16 @@ pub struct ShellTool {
     pub working_dir: Option<String>,
     /// Maximum output length in bytes.
     pub max_output: usize,
+    /// Whether command execution is allowed.
+    pub allow_command_exec: bool,
 }
 
 impl ShellTool {
-    pub fn new() -> Self {
+    pub fn new(allow_command_exec: bool) -> Self {
         Self {
             working_dir: None,
             max_output: 10_000,
+            allow_command_exec,
         }
     }
 
@@ -32,7 +35,7 @@ impl ShellTool {
 
 impl Default for ShellTool {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
@@ -68,6 +71,13 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
+        if !self.allow_command_exec {
+            return Err(zenclaw_core::error::ZenClawError::ToolExecution {
+                tool: "exec".to_string(),
+                message: "Shell execution disabled by policy. Set ZENCLAW_ALLOW_COMMAND_EXEC=1 to enable.".to_string(),
+            });
+        }
+
         let command = args["command"]
             .as_str()
             .unwrap_or("")

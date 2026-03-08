@@ -120,7 +120,7 @@ impl RagStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT d.id, d.source, d.content, d.metadata, rank
+                "SELECT d.id, d.source, d.content, d.metadata, bm25(documents_fts, 10.0, 2.0, 1.0) as rank
                  FROM documents_fts
                  JOIN documents d ON d.id = documents_fts.rowid
                  WHERE documents_fts MATCH ?1

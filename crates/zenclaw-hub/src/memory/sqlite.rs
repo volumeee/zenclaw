@@ -256,3 +256,17 @@ impl MemoryStore for SqliteMemory {
         }
     }
 }
+
+impl SqliteMemory {
+    /// Prune history older than `retention_days`.
+    pub async fn prune_history(&self, retention_days: u32) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn
+            .execute(
+                "DELETE FROM history WHERE created_at < datetime('now', ?1)",
+                rusqlite::params![format!("-{} days", retention_days)],
+            )
+            .map_err(|e| ZenClawError::Memory(e.to_string()))?;
+        Ok(deleted)
+    }
+}

@@ -127,8 +127,8 @@ impl WhatsAppChannel {
                 .spawn()
                 .map_err(|e| ZenClawError::Other(format!("Failed to spawn bridge: {}. Is Node.js installed?", e)))?;
             
-            let stdout = child.stdout.take().unwrap();
-            let stderr = child.stderr.take().unwrap();
+            let stdout = child.stdout.take().expect("Failed to open bridge stdout");
+            let stderr = child.stderr.take().expect("Failed to open bridge stderr");
             
             let log_tx_stdout = log_tx.clone();
             tokio::spawn(async move {

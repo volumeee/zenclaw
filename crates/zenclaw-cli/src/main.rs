@@ -10,22 +10,19 @@ pub mod tui_menu;
 pub mod theme;
 pub mod tui_guard;
 pub mod markdown;
+pub mod commands;
 
 use std::io::{self, Write};
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use colored::*;
 use tracing_subscriber::EnvFilter;
 
 use zenclaw_core::agent::{Agent, AgentConfig};
-use zenclaw_core::bus::EventBus;
 use zenclaw_core::config::ZenClawConfig;
 use zenclaw_core::provider::ProviderConfig;
-use zenclaw_hub::channels::{DiscordConfig, TelegramConfig};
 use zenclaw_hub::memory::SqliteMemory;
 use zenclaw_hub::providers::OpenAiProvider;
-use zenclaw_hub::skills::SkillManager;
 use zenclaw_hub::plugins::PluginManager;
 use zenclaw_hub::tools::{
     CodebaseSearchTool, CronTool, EditFileTool, EnvTool, HealthTool, HistoryTool, ListDirTool, ProcessTool,
@@ -224,6 +221,13 @@ enum Commands {
         #[arg(short, long, default_value_t = 50)]
         lines: usize,
     },
+
+    /// 🧹 Run maintenance tasks (e.g. prune history)
+    Maintenance {
+        /// Number of days of history to retain (default 30)
+        #[arg(long, default_value_t = 30)]
+        retention_days: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -242,7 +246,7 @@ enum ConfigAction {
 }
 
 #[derive(Subcommand)]
-enum SkillAction {
+pub enum SkillAction {
     /// List available skills
     List,
     /// Show a skill's content
@@ -466,8 +470,12 @@ async fn build_agent(model: &str, skill_prompt: Option<&str>) -> Agent {
         ..Default::default()
     });
 
-    agent.tools.register(ShellTool::new());
-    agent.tools.register(ProcessTool::new());
+    let config = zenclaw_core::config::ZenClawConfig::load(&zenclaw_core::config::ZenClawConfig::default_path()).unwrap_or_default();
+    let allow_exec = std::env::var("ZENCLAW_ALLOW_COMMAND_EXEC").unwrap_or_default() == "1" 
+                     || std::env::var("ZENCLAW_ALLOW_COMMAND_EXEC").unwrap_or_default() == "true";
+
+    agent.tools.register(ShellTool::new(allow_exec));
+    agent.tools.register(ProcessTool::new(allow_exec));
     agent.tools.register(SubAgentTool::new());
     agent.tools.register(ReadFileTool::new());
     agent.tools.register(WriteFileTool::new());
@@ -475,10 +483,9 @@ async fn build_agent(model: &str, skill_prompt: Option<&str>) -> Agent {
     agent.tools.register(ListDirTool::new());
     agent.tools.register(CodebaseSearchTool::new());
     agent.tools.register(WebFetchTool::new());
-    agent.tools.register(WebScrapeTool::new());
-    agent.tools.register(WebSearchTool::new());
+    agent.tools.register(WebScrapeTool::new(config.tools.jina_api_key.clone()));
+    agent.tools.register(WebSearchTool::new(config.tools.jina_api_key.clone()));
     
-    let config = zenclaw_core::config::ZenClawConfig::load(&zenclaw_core::config::ZenClawConfig::default_path()).unwrap_or_default();
     agent.tools.register(SkillsMpTool::new(Some(config.tools)));
     agent.tools.register(SystemInfoTool::new());
     agent.tools.register(CronTool::new());
@@ -504,21 +511,7 @@ async fn main() -> anyhow::Result<()> {
     // Load .env automatically
     dotenvy::dotenv().ok();
 
-    // Check saved config and inject tool API keys into env so we don't have to rewrite tools 
-    if let Some(config) = setup::load_saved_config() {
-        if let Some(key) = config.tools.jina_api_key && !key.trim().is_empty() {
-            unsafe { std::env::set_var("JINA_API_KEY", key); }
-        }
-        if let Some(key) = config.tools.openweather_api_key && !key.trim().is_empty() {
-            unsafe { std::env::set_var("OPENWEATHER_API_KEY", key); }
-        }
-        if let Some(key) = config.tools.serper_api_key && !key.trim().is_empty() {
-            unsafe { std::env::set_var("SERPER_API_KEY", key); }
-        }
-        if let Some(key) = config.tools.skillsmp_api_key && !key.trim().is_empty() {
-            unsafe { std::env::set_var("SKILLSMP_API_KEY", key); }
-        }
-    }
+    // Note: Config loading and tool API key injection are now safely scoped in tool initialization.
 
     // Setup filesystem log trailing instead of dumping tracing to stdout
     let log_dir = setup::data_dir().join("logs");
@@ -551,7 +544,7 @@ async fn main() -> anyhow::Result<()> {
             api_base,
             skill,
         }) => {
-            run_chat(
+            commands::run_chat(
                 provider.as_deref(),
                 model.as_deref(),
                 api_key.as_deref(),
@@ -568,7 +561,7 @@ async fn main() -> anyhow::Result<()> {
             provider,
             api_key,
         }) => {
-            run_ask(
+            commands::run_ask(
                 provider.as_deref(),
                 model.as_deref(),
                 api_key.as_deref(),
@@ -588,7 +581,7 @@ async fn main() -> anyhow::Result<()> {
 
         // ─── Status ────────────────────────────────────
         Some(Commands::Status) => {
-            run_status().await?;
+            commands::run_status().await?;
         }
 
         // ─── Telegram Bot ──────────────────────────────
@@ -599,7 +592,7 @@ async fn main() -> anyhow::Result<()> {
             api_key,
             allowed_users,
         }) => {
-            run_telegram(
+            commands::run_telegram(
                 token.as_deref(),
                 provider.as_deref(),
                 model.as_deref(),
@@ -616,7 +609,7 @@ async fn main() -> anyhow::Result<()> {
             provider,
             api_key,
         }) => {
-            run_discord(
+            commands::run_discord(
                 token.as_deref(),
                 provider.as_deref(),
                 model.as_deref(),
@@ -636,7 +629,7 @@ async fn main() -> anyhow::Result<()> {
             let channels = allowed_channels
                 .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
                 .unwrap_or_default();
-            run_slack(
+            commands::run_slack(
                 token.as_deref(),
                 provider.as_deref(),
                 model.as_deref(),
@@ -648,7 +641,7 @@ async fn main() -> anyhow::Result<()> {
 
         // ─── Skills ───────────────────────────────────
         Some(Commands::Skills { action }) => {
-            run_skills(action).await?;
+            commands::run_skills(action).await?;
         }
 
         Some(Commands::Serve {
@@ -658,7 +651,7 @@ async fn main() -> anyhow::Result<()> {
             model,
             api_key,
         }) => {
-            run_serve(
+            commands::run_serve(
                 &host,
                 port,
                 provider.as_deref(),
@@ -675,7 +668,7 @@ async fn main() -> anyhow::Result<()> {
             api_key,
             allowed_numbers,
         }) => {
-            run_whatsapp(
+            commands::run_whatsapp(
                 &bridge,
                 provider.as_deref(),
                 model.as_deref(),
@@ -686,12 +679,17 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Some(Commands::Update) => {
-            run_update_check().await?;
+            commands::run_update_check().await?;
         }
 
         // ─── Logs Monitoring ───────────────────────────
         Some(Commands::Logs { lines }) => {
-            run_logs(lines).await?;
+            commands::run_logs(lines).await?;
+        }
+
+        // ─── Maintenance ───────────────────────────────
+        Some(Commands::Maintenance { retention_days }) => {
+            commands::run_maintenance(retention_days).await?;
         }
 
         // ─── Default: show interactive menu loop ─────────────
@@ -714,16 +712,16 @@ async fn main() -> anyhow::Result<()> {
                 
                 let result = match choice.as_str() {
                     "setup" => setup::run_setup(),
-                    "chat" => run_chat(None, None, None, None, vec![]).await,
+                    "chat" => commands::run_chat(None, None, None, None, vec![]).await,
                     "switch" => {
                         let _ = setup::run_model_switcher();
                         Ok(())
                     }
-                    "telegram" => run_telegram(None, None, None, None, None).await,
-                    "discord" => run_discord(None, None, None, None).await,
-                    "whatsapp" => run_whatsapp("http://localhost:3001", None, None, None, None).await,
-                    "api" => run_serve("127.0.0.1", 3000, None, None, None).await,
-                    "skills" => run_skills(None).await,
+                    "telegram" => commands::run_telegram(None, None, None, None, None).await,
+                    "discord" => commands::run_discord(None, None, None, None).await,
+                    "whatsapp" => commands::run_whatsapp("http://localhost:3001", None, None, None, None).await,
+                    "api" => commands::run_serve("127.0.0.1", 3000, None, None, None).await,
+                    "skills" => commands::run_skills(None).await,
                     "settings" => {
                         loop {
                             let config_options = vec![
@@ -770,13 +768,7 @@ async fn main() -> anyhow::Result<()> {
                                         } else {
                                             config.tools.jina_api_key = Some(key.trim().to_string());
                                         }
-                                        if config.save(&ZenClawConfig::default_path()).is_ok() {
-                                            if let Some(ref val) = config.tools.jina_api_key {
-                                                unsafe { std::env::set_var("JINA_API_KEY", val); }
-                                            } else {
-                                                unsafe { std::env::remove_var("JINA_API_KEY"); }
-                                            }
-                                        }
+                                        let _ = config.save(&ZenClawConfig::default_path());
                                     }
                                 },
                                 Some("4") => {
@@ -787,13 +779,7 @@ async fn main() -> anyhow::Result<()> {
                                         } else {
                                             config.tools.openweather_api_key = Some(key.trim().to_string());
                                         }
-                                        if config.save(&ZenClawConfig::default_path()).is_ok() {
-                                            if let Some(ref val) = config.tools.openweather_api_key {
-                                                unsafe { std::env::set_var("OPENWEATHER_API_KEY", val); }
-                                            } else {
-                                                unsafe { std::env::remove_var("OPENWEATHER_API_KEY"); }
-                                            }
-                                        }
+                                        let _ = config.save(&ZenClawConfig::default_path());
                                     }
                                 },
                                 Some("5") => {
@@ -804,13 +790,7 @@ async fn main() -> anyhow::Result<()> {
                                         } else {
                                             config.tools.serper_api_key = Some(key.trim().to_string());
                                         }
-                                        if config.save(&ZenClawConfig::default_path()).is_ok() {
-                                            if let Some(ref val) = config.tools.serper_api_key {
-                                                unsafe { std::env::set_var("SERPER_API_KEY", val); }
-                                            } else {
-                                                unsafe { std::env::remove_var("SERPER_API_KEY"); }
-                                            }
-                                        }
+                                        let _ = config.save(&ZenClawConfig::default_path());
                                     }
                                 },
                                 Some("6") => {
@@ -821,13 +801,7 @@ async fn main() -> anyhow::Result<()> {
                                         } else {
                                             config.tools.skillsmp_api_key = Some(key.trim().to_string());
                                         }
-                                        if config.save(&ZenClawConfig::default_path()).is_ok() {
-                                            if let Some(ref val) = config.tools.skillsmp_api_key {
-                                                unsafe { std::env::set_var("SKILLSMP_API_KEY", val); }
-                                            } else {
-                                                unsafe { std::env::remove_var("SKILLSMP_API_KEY"); }
-                                            }
-                                        }
+                                        let _ = config.save(&ZenClawConfig::default_path());
                                     }
                                 },
                                 Some("7") | None => {
@@ -837,8 +811,8 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    "updates" => run_update_check().await,
-                    "logs" => run_logs(50).await,
+                    "updates" => commands::run_update_check().await,
+                    "logs" => commands::run_logs(50).await,
                     "exit" => {
                         should_exit = true;
                         Ok(())
@@ -870,792 +844,4 @@ async fn main() -> anyhow::Result<()> {
 }
 
 // ─── Command Handlers ──────────────────────────────────────
-
-async fn run_chat(
-    provider_name: Option<&str>,
-    model: Option<&str>,
-    api_key: Option<&str>,
-    api_base: Option<&str>,
-    active_skills: Vec<String>,
-) -> anyhow::Result<()> {
-    let skill_prompt = if active_skills.is_empty() {
-        None
-    } else {
-        let data = setup::data_dir();
-        let mut skill_mgr = SkillManager::new(&data.join("skills"));
-        let _ = skill_mgr.load_all().await;
-        let prompt = skill_mgr.build_prompt(&active_skills);
-        if prompt.is_empty() { None } else { Some(prompt) }
-    };
-
-    let (agent, provider, memory, provider_name, model) = setup_bot_env(
-        provider_name,
-        model,
-        api_key,
-        api_base,
-        skill_prompt.as_deref()
-    ).await?;
-
-    ui::print_session_info(&provider_name, &model, agent.tools.len(), &active_skills);
-
-    let session_key = "cli:default";
-    
-    // Set up Alternate Screen & Raw Mode for TUI
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    crossterm::execute!(
-        stdout, 
-        crossterm::terminal::EnterAlternateScreen, 
-        crossterm::event::EnableMouseCapture,
-        crossterm::event::EnableBracketedPaste
-    )?;
-    let backend = ratatui::backend::CrosstermBackend::new(stdout);
-    let terminal = ratatui::Terminal::new(backend)?;
-
-    let bus = std::sync::Arc::new(EventBus::new(32));
-
-    // RUN THE TUI
-    let res = tui_app::run_tui(
-        terminal,
-        std::sync::Arc::new(agent),
-        std::sync::Arc::new(provider),
-        std::sync::Arc::new(memory),
-        session_key.to_string(),
-        bus,
-    ).await;
-
-    // Restore terminal exactly as before
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableBracketedPaste
-    )?;
-
-    if let Err(e) = res {
-        eprintln!("{} {}", "UI Error:".red(), e);
-    }
-
-    Ok(())
-}
-
-async fn run_ask(
-    provider_name: Option<&str>,
-    model: Option<&str>,
-    api_key: Option<&str>,
-    message: &str,
-) -> anyhow::Result<()> {
-    let (provider_name, model, api_key, _api_base) =
-        resolve_config(provider_name, model, api_key, None)?;
-
-    let provider = create_provider(&provider_name, &api_key, &model, None);
-    let memory = zenclaw_core::memory::InMemoryStore::new();
-    let agent = build_agent(&model, None).await;
-
-    // Create bus for streaming status to user
-    let bus = EventBus::new(32);
-    let mut rx = bus.subscribe_system();
-
-    // Background task: print thinking/tool status to stderr
-    let status_handle = tokio::spawn(async move {
-        use std::io::Write;
-        while let Ok(event) = rx.recv().await {
-            if let Some(msg) = event.format_status() {
-                // Print status on stderr with carriage return for overwrite effect
-                eprint!("\r\x1b[2K\x1b[90m{}\x1b[0m", msg);
-                let _ = std::io::stderr().flush();
-            }
-        }
-    });
-
-    match agent.process(&provider, &memory, message, "oneshot", Some(&bus)).await {
-        Ok(response) => {
-            // Clear the status line before printing response
-            eprint!("\r\x1b[2K");
-            println!("{}", response);
-        }
-        Err(e) => {
-            eprint!("\r\x1b[2K");
-            eprintln!("{}: {}", "Error".red(), e);
-        }
-    }
-
-    // Cleanup
-    status_handle.abort();
-
-    Ok(())
-}
-
-async fn run_status() -> anyhow::Result<()> {
-    let has_config = ZenClawConfig::default_path().exists();
-    let config = setup::load_saved_config();
-
-    let mut out = String::new();
-    out.push_str(&format!("  ZenClaw v{}\n", env!("CARGO_PKG_VERSION")));
-    out.push_str(&format!("  Data dir: {:?}\n", setup::data_dir()));
-    out.push_str(&format!(
-        "  Config: {} {}\n",
-        ZenClawConfig::default_path().display(),
-        if has_config { "✅" } else { "❌ (run `zenclaw setup`)" }
-    ));
-
-    if let Some(ref cfg) = config {
-        out.push_str("\n  Current Settings:\n");
-        out.push_str(&format!("    Provider: {}\n", cfg.provider.provider));
-        out.push_str(&format!("    Model:    {}\n", cfg.provider.model));
-        out.push_str(&format!(
-            "    API Key:  {}\n",
-            if cfg.provider.api_key.is_some() { "✅ configured" } else { "❌ not set" }
-        ));
-    }
-
-    out.push_str("\n  Environment Variables:\n");
-    for p in &["OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"] {
-        let status = if std::env::var(p).is_ok() { "✅" } else { "·" };
-        out.push_str(&format!("    {} {}\n", status, p));
-    }
-    out.push_str("    🟡 Ollama (localhost:11434)\n");
-
-    let data = setup::data_dir();
-    let mut skill_mgr = SkillManager::new(&data.join("skills"));
-    let skill_count = skill_mgr.load_all().await.unwrap_or(0);
-    out.push_str(&format!(
-        "\n  Skills: {} loaded from {}\n",
-        skill_count,
-        data.join("skills").display()
-    ));
-
-    crate::tui_menu::run_tui_text_viewer("📊 System Status", &out).ok();
-    Ok(())
-}
-
-
-async fn run_telegram(
-    cli_bot_token: Option<&str>,
-    cli_provider: Option<&str>,
-    cli_model: Option<&str>,
-    cli_api_key: Option<&str>,
-    allowed_users: Option<&str>,
-) -> anyhow::Result<()> {
-    // 1. Resolve agent environment first
-    let (agent, provider, memory, resolved_provider, resolved_model) = setup_bot_env(
-        cli_provider,
-        cli_model,
-        cli_api_key,
-        None,
-        None
-    ).await?;
-
-    let agent = Arc::new(agent);
-    let provider = Arc::new(provider);
-    let memory = Arc::new(memory);
-
-    // 2. Resolve bot token: CLI arg → config → env → TUI prompt
-    let saved = setup::load_saved_config();
-    let mut current_token = cli_bot_token
-        .map(|s| s.to_string())
-        .or_else(|| {
-            saved
-                .as_ref()
-                .and_then(|c| c.channels.telegram.as_ref())
-                .map(|t| t.bot_token.clone())
-                .filter(|t| !t.is_empty())
-        });
-
-    let allowed: Vec<i64> = allowed_users
-        .unwrap_or("")
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-
-    loop {
-        let token = match current_token {
-            Some(ref t) => t.clone(),
-            None => {
-                let t = crate::tui_menu::run_tui_input(
-                    "Telegram Bot Token Required",
-                    "Enter your Telegram Bot Token:",
-                    "",
-                    true
-                ).ok().flatten().unwrap_or_default();
-                
-                if t.is_empty() {
-                    return Ok(()); // Cancelled
-                }
-                t
-            }
-        };
-
-        let config = TelegramConfig {
-            bot_token: token.clone(),
-            allowed_users: allowed.clone(),
-            poll_timeout: 30,
-        };
-
-        let mut telegram = zenclaw_hub::channels::TelegramChannel::new(config);
-        
-        // Start bot (verifies token via getMe)
-        match telegram.start(agent.clone(), provider.clone(), memory.clone()).await {
-            Ok(_) => {
-                let _ = setup::run_config_set("telegram_token", &token);
-                // Interactively monitor bot status via TUI
-                let details = [
-                    ("Channel", "Telegram"),
-                    ("Allowed Users", if allowed.is_empty() { "Public" } else { "Restricted" }),
-                    ("Poll Timeout", "30s"),
-                ];
-                let _ = crate::tui_menu::run_bot_dashboard("Telegram", &resolved_provider, &resolved_model, &details, None);
-                telegram.stop().await;
-                break Ok(());
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                if error_msg.contains("token is invalid") || error_msg.contains("Unauthorized") {
-                    let _ = crate::tui_menu::run_tui_error("Telegram Connection Failed", &format!("{}\n\nPlease check your token and try again.", error_msg));
-                    current_token = None; // Force re-prompt
-                } else {
-                    return Err(e.into());
-                }
-            }
-        }
-    }
-}
-
-async fn run_discord(
-    cli_bot_token: Option<&str>,
-    cli_provider: Option<&str>,
-    cli_model: Option<&str>,
-    cli_api_key: Option<&str>,
-) -> anyhow::Result<()> {
-    let (agent, provider, memory, resolved_provider, resolved_model) = setup_bot_env(
-        cli_provider,
-        cli_model,
-        cli_api_key,
-        None,
-        None
-    ).await?;
-
-    let agent = Arc::new(agent);
-    let provider = Arc::new(provider);
-    let memory = Arc::new(memory);
-
-    let saved = setup::load_saved_config();
-    let mut current_token = cli_bot_token
-        .map(|s| s.to_string())
-        .or_else(|| {
-            saved
-                .as_ref()
-                .and_then(|c| c.channels.discord.as_ref())
-                .map(|d| d.bot_token.clone())
-                .filter(|d| !d.is_empty())
-        });
-
-    loop {
-        let token = match current_token {
-            Some(ref t) => t.clone(),
-            None => {
-                let t = crate::tui_menu::run_tui_input(
-                    "Discord Bot Token Required",
-                    "Enter your Discord Bot Token:",
-                    "",
-                    true
-                ).ok().flatten().unwrap_or_default();
-                
-                if t.is_empty() {
-                    return Ok(());
-                }
-                t
-            }
-        };
-
-        let config = DiscordConfig {
-            bot_token: token.clone(),
-            allowed_users: vec![],
-        };
-
-        let mut discord = zenclaw_hub::channels::DiscordChannel::new(config);
-        
-        match discord.start(agent.clone(), provider.clone(), memory.clone()).await {
-            Ok(_) => {
-                let _ = setup::run_config_set("discord_token", &token);
-                let details = [
-                    ("Channel", "Discord"),
-                    ("Connection", "Gateway/Secure"),
-                    ("Allowed Guilds", "All"),
-                ];
-                let _ = crate::tui_menu::run_bot_dashboard("Discord", &resolved_provider, &resolved_model, &details, None);
-                discord.stop().await;
-                break Ok(());
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                if error_msg.contains("token") || error_msg.contains("Unauthorized") || error_msg.contains("401") {
-                    let _ = crate::tui_menu::run_tui_error("Discord Connection Failed", &format!("{}\n\nPlease check your discord token.", error_msg));
-                    current_token = None;
-                } else {
-                    return Err(e.into());
-                }
-            }
-        }
-    }
-}
-
-async fn run_slack(
-    cli_bot_token: Option<&str>,
-    cli_provider: Option<&str>,
-    cli_model: Option<&str>,
-    cli_api_key: Option<&str>,
-    allowed_channels: Vec<String>,
-) -> anyhow::Result<()> {
-    let (agent, provider, memory, resolved_provider, resolved_model) = setup_bot_env(
-        cli_provider,
-        cli_model,
-        cli_api_key,
-        None,
-        None
-    ).await?;
-
-    let agent = Arc::new(agent);
-    let provider = Arc::new(provider);
-    let memory = Arc::new(memory);
-
-    let saved = setup::load_saved_config();
-    let mut current_token = cli_bot_token
-        .map(|s| s.to_string())
-        .or_else(|| {
-            saved
-                .as_ref()
-                .and_then(|c| c.channels.slack.as_ref())
-                .map(|s| s.bot_token.clone())
-                .filter(|s| !s.is_empty())
-        });
-
-    loop {
-        let token = match current_token {
-            Some(ref t) => t.clone(),
-            None => {
-                let t = crate::tui_menu::run_tui_input(
-                    "Slack Bot Token Required",
-                    "Enter your Slack Bot Token:",
-                    "",
-                    true
-                ).ok().flatten().unwrap_or_default();
-                
-                if t.is_empty() {
-                    return Ok(());
-                }
-                t
-            }
-        };
-
-        let config = zenclaw_hub::channels::SlackConfig {
-            bot_token: token.clone(),
-            allowed_channels: allowed_channels.clone(),
-        };
-
-        let mut slack = zenclaw_hub::channels::SlackChannel::new(config);
-        
-        match slack.start(agent.clone(), provider.clone(), memory.clone()).await {
-            Ok(_) => {
-                let _ = setup::run_config_set("slack_token", &token);
-                let details = [
-                    ("Channel", "Slack"),
-                    ("Allowed Chans", if allowed_channels.is_empty() { "All" } else { "Restricted" }),
-                ];
-                let _ = crate::tui_menu::run_bot_dashboard("Slack", &resolved_provider, &resolved_model, &details, None);
-                slack.stop().await;
-                break Ok(());
-            }
-            Err(e) => {
-                let error_msg = e.to_string();
-                if error_msg.contains("token") || error_msg.contains("Unauthorized") {
-                    let _ = crate::tui_menu::run_tui_error("Slack Connection Failed", &format!("{}\n\nPlease check your slack token.", error_msg));
-                    current_token = None;
-                } else {
-                    return Err(e.into());
-                }
-            }
-        }
-    }
-}
-
-async fn run_skills(action: Option<SkillAction>) -> anyhow::Result<()> {
-    let data = setup::data_dir();
-    let mut skill_mgr = SkillManager::new(&data.join("skills"));
-    skill_mgr.load_all().await?;
-
-    match action {
-        Some(SkillAction::Show { name }) => {
-            if let Some(skill) = skill_mgr.get(&name) {
-                let content = format!(
-                    "Skill: {}\nDescription: {}\nFile: {}\n\n{}",
-                    skill.title, skill.description, skill.path.display(), skill.content
-                );
-                crate::tui_menu::run_tui_text_viewer(&skill.title, &content).ok();
-            } else {
-                let available = skill_mgr.list().iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
-                crate::tui_menu::run_tui_error("Skill Not Found", &format!("Skill '{}' not found.\n\nAvailable: {}", name, available)).ok();
-            }
-        }
-        _ => {
-            loop {
-                let mut items = vec![];
-                items.push(crate::tui_menu::MenuItem {
-                    label: "➕ Create New Skill".to_string(),
-                    description: "Create a new specialized AI behavior from scratch.".to_string(),
-                    action_key: "create_new".to_string(),
-                });
-
-                for skill in skill_mgr.list() {
-                    items.push(crate::tui_menu::MenuItem {
-                        label: format!("{} {}", "•".cyan(), skill.name),
-                        description: format!("Skill: {}\n\n{}\n\nFile: {}", skill.title, skill.description, skill.path.display()),
-                        action_key: skill.name.clone(),
-                    });
-                }
-                items.push(crate::tui_menu::MenuItem {
-                    label: "❌ Back".to_string(),
-                    description: "Return to previous menu.".to_string(),
-                    action_key: "back".to_string(),
-                });
-
-                if let Ok(Some(action_key)) = crate::tui_menu::run_tui_menu("📚 Manage Skills", &items, 0) {
-                    if action_key == "back" {
-                        break;
-                    }
-
-                    if action_key == "create_new" {
-                        let name_input = crate::tui_menu::run_tui_input("New Skill", "Enter internal name (id):", "", false)?;
-                        if let Some(name) = name_input 
-                            && !name.trim().is_empty()
-                            && let Ok(Some((t, d, c))) = crate::tui_menu::run_tui_skill_editor(&name, &name, "", "") 
-                        {
-                            skill_mgr.save_skill(&name, &t, &d, &c).await?;
-                        }
-                        continue;
-                    }
-
-                    // Clone skill data to release immutable borrow on skill_mgr
-                    let skill_data = skill_mgr.get(&action_key).map(|s| {
-                        (s.name.clone(), s.title.clone(), s.description.clone(), s.content.clone(), s.path.display().to_string())
-                    });
-
-                    if let Some((s_name, s_title, s_desc, s_content, s_path)) = skill_data {
-                        loop {
-                            let skill_options = vec![
-                                crate::tui_menu::MenuItem { label: "📄 View Content".into(), description: "Read the skill markdown content.".into(), action_key: "view".into() },
-                                crate::tui_menu::MenuItem { label: "📝 Edit Skill".into(), description: "Modify title, description, or content.".into(), action_key: "edit".into() },
-                                crate::tui_menu::MenuItem { label: "🗑️  Delete Skill".into(), description: "Permanently remove this skill from disk.".into(), action_key: "delete".into() },
-                                crate::tui_menu::MenuItem { label: "⬅️  Back".into(), description: "Return to skills list.".into(), action_key: "back".into() },
-                            ];
-                            let skill_sel = crate::tui_menu::run_tui_menu(&format!("Manage: {}", s_name), &skill_options, 0)?;
-                            
-                            match skill_sel.as_deref() {
-                                Some("view") => {
-                                    let content = format!("Skill: {}\nDescription: {}\nFile: {}\n\n{}\n", s_title, s_desc, s_path, s_content);
-                                    crate::tui_menu::run_tui_text_viewer(&s_title, &content).ok();
-                                },
-                                Some("edit") => {
-                                    if let Ok(Some((t, d, c))) = crate::tui_menu::run_tui_skill_editor(&s_name, &s_title, &s_desc, &s_content) {
-                                        skill_mgr.save_skill(&s_name, &t, &d, &c).await?;
-                                        break;
-                                    }
-                                },
-                                Some("delete") => {
-                                    let confirm = crate::tui_menu::run_tui_input("Confirm Delete", &format!("Delete '{}'? Type 'yes' to confirm:", s_name), "", false)?;
-                                    if confirm.as_deref() == Some("yes") {
-                                        skill_mgr.delete_skill(&s_name).await?;
-                                        break;
-                                    }
-                                },
-                                _ => break,
-                            }
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// ─── Serve (REST API) ──────────────────────────────────────
-
-async fn run_serve(
-    cli_host: &str,
-    cli_port: u16,
-    cli_provider: Option<&str>,
-    cli_model: Option<&str>,
-    cli_api_key: Option<&str>,
-) -> anyhow::Result<()> {
-    let (agent, provider, memory, resolved_provider, resolved_model) = setup_bot_env(
-        cli_provider,
-        cli_model,
-        cli_api_key,
-        None,
-        None
-    ).await?;
-
-    let data = setup::data_dir();
-    let rag_path = data.join("rag.db");
-    let rag = zenclaw_hub::memory::RagStore::open(&rag_path).ok().map(Arc::new);
-
-    let host = cli_host.to_string();
-    let mut port = cli_port;
-
-    let agent = Arc::new(agent);
-    let provider = Arc::new(provider);
-    let memory = Arc::new(memory);
-
-    loop {
-        let state = zenclaw_hub::api::ApiState {
-            agent: agent.clone(),
-            provider: provider.clone(),
-            memory: memory.clone(),
-            rag: rag.clone(),
-        };
-
-        // Fail-fast test to see if we can bind to the port
-        let addr_str = format!("{}:{}", host, port);
-        match tokio::net::TcpListener::bind(&addr_str).await {
-            Ok(listener) => {
-                drop(listener); // Close it so AXUM can take it
-
-                // Run server in background
-                let bg_host = host.clone();
-                let bg_port = port;
-                let bg_state = state; 
-                tokio::spawn(async move {
-                    let _ = zenclaw_hub::api::start_server_from_state(bg_state, &bg_host, bg_port).await;
-                });
-
-                // Interactively monitor via TUI
-                let endpoint = format!("http://{}:{}", host, port);
-                let details = [
-                    ("Host", host.as_str()),
-                    ("Port", &port.to_string()),
-                    ("Status", "Listening"),
-                    ("Endpoint", endpoint.as_str()),
-                ];
-                let _ = crate::tui_menu::run_bot_dashboard("REST API", &resolved_provider, &resolved_model, &details, None);
-                break Ok(());
-            }
-            Err(e) => {
-                let _ = crate::tui_menu::run_tui_error("Server Startup Failed", &format!("Address {} error: {}\n\nPlease try a different port.", addr_str, e));
-                let input = crate::tui_menu::run_tui_input("Assign New Port", "Enter Port Number:", &port.to_string(), false)?;
-                if let Some(p_str) = input && let Ok(p) = p_str.parse() {
-                    port = p;
-                    continue;
-                }
-                break Err(anyhow::anyhow!("Port binding failed. Aborting."));
-            }
-        }
-    }
-}
-
-// ─── WhatsApp ──────────────────────────────────────────────
-
-async fn run_whatsapp(
-    cli_bridge_url: &str,
-    cli_provider: Option<&str>,
-    cli_model: Option<&str>,
-    cli_api_key: Option<&str>,
-    allowed_numbers: Option<&str>,
-) -> anyhow::Result<()> {
-    let (agent, provider, memory, resolved_provider, resolved_model) = setup_bot_env(
-        cli_provider,
-        cli_model,
-        cli_api_key,
-        None,
-        None
-    ).await?;
-
-    let agent = Arc::new(agent);
-    let provider = Arc::new(provider);
-    let memory = Arc::new(memory);
-
-    let mut current_bridge_url = if cli_bridge_url.is_empty() {
-        "http://localhost:3001".to_string()
-    } else {
-        cli_bridge_url.to_string()
-    };
-
-    let (log_tx, log_rx) = tokio::sync::mpsc::channel(100);
-
-    loop {
-        let mut wa = zenclaw_hub::channels::WhatsAppChannel::new(&current_bridge_url);
-
-        if let Some(numbers) = allowed_numbers {
-            let nums: Vec<String> = numbers.split(',').map(|s| s.trim().to_string()).collect();
-            wa = wa.with_allowed_numbers(nums);
-        }
-
-        match wa.start(agent.clone(), provider.clone(), memory.clone(), Some(log_tx.clone())).await {
-            Ok(_) => {
-                let details = [
-                    ("Bridge URL", current_bridge_url.as_str()),
-                    ("Poll Interval", "2000ms"),
-                    ("Auth", "Bridge-based"),
-                ];
-                let _ = crate::tui_menu::run_bot_dashboard("WhatsApp", &resolved_provider, &resolved_model, &details, Some(log_rx));
-                break Ok(());
-            }
-            Err(e) => {
-                let _ = crate::tui_menu::run_tui_error("WhatsApp Connection Failed", &format!("{}\n\nMake sure your bridge is running or check the URL.", e));
-                let input = crate::tui_menu::run_tui_input(
-                    "WhatsApp Bridge URL", 
-                    "Enter Bridge URL:", 
-                    &current_bridge_url, 
-                    false
-                )?;
-                
-                if let Some(new_url) = input {
-                    current_bridge_url = new_url;
-                } else {
-                    return Ok(()); // Cancelled
-                }
-            }
-        }
-    }
-}
-
-// ─── Update Check ──────────────────────────────────────────
-
-async fn run_update_check() -> anyhow::Result<()> {
-    match zenclaw_hub::updater::check_for_updates().await {
-        Ok(Some(info)) => {
-            let mut out = String::new();
-            out.push_str("  🆕 New version available!\n\n");
-            out.push_str(&format!("  Current: v{}\n", info.current));
-            out.push_str(&format!("  Latest:  v{}\n", info.latest));
-            out.push_str(&format!("  URL:     {}\n", info.url));
-
-            if !info.changelog.is_empty() {
-                let preview = if info.changelog.len() > 500 {
-                    format!("{}...", &info.changelog[..500])
-                } else {
-                    info.changelog.clone()
-                };
-                out.push_str("\n  Changelog:\n");
-                for line in preview.lines().take(15) {
-                    out.push_str(&format!("    {}\n", line));
-                }
-            }
-
-            let install_cmd = match std::env::consts::OS {
-                "windows" => format!(
-                    "Invoke-WebRequest -Uri https://github.com/volumeee/zenclaw/releases/download/v{}/zenclaw-windows-amd64.exe -OutFile zenclaw.exe",
-                    info.latest
-                ),
-                "macos" => format!(
-                    "curl -L https://github.com/volumeee/zenclaw/releases/download/v{}/zenclaw-macos-$(uname -m).tar.gz | tar -xz && sudo mv zenclaw /usr/local/bin/zenclaw",
-                    info.latest
-                ),
-                _ => format!(
-                    "wget -qO- https://github.com/volumeee/zenclaw/releases/download/v{}/zenclaw-linux-$(uname -m).tar.gz | tar -xz && sudo mv zenclaw /usr/local/bin/zenclaw",
-                    info.latest
-                ),
-            };
-
-            out.push_str(&format!("\n  To update, run:\n  {}\n", install_cmd));
-            crate::tui_menu::run_tui_text_viewer("🔄 Update Available", &out).ok();
-        }
-        Ok(None) => {
-            let msg = format!("✅ You're on the latest version! (v{})", env!("CARGO_PKG_VERSION"));
-            crate::tui_menu::run_tui_text_viewer("🔄 Update Check", &msg).ok();
-        }
-        Err(e) => {
-            crate::tui_menu::run_tui_error("Update Check Failed", &format!("Unable to check for updates:\n{}", e)).ok();
-        }
-    }
-    Ok(())
-}
-
-
-async fn run_logs(initial_lines: usize) -> anyhow::Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
-    use tokio::fs::File;
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    let log_dir = setup::data_dir().join("logs");
-
-    // Find the most recent log file — tracing_appender uses UTC dates,
-    // which may differ from local time, so we pick the newest file instead.
-    let log_file = std::fs::read_dir(&log_dir)
-        .ok()
-        .and_then(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name().to_string_lossy().starts_with("zenclaw.log.")
-                })
-                .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
-                .map(|e| e.path())
-        });
-
-    let log_file = match log_file {
-        Some(f) => f,
-        None => {
-            crate::tui_menu::run_tui_error(
-                "Log File Not Found",
-                &format!("No log files in:\n{}\n\nRun the app first to generate logs.", log_dir.display()),
-            ).ok();
-            return Ok(());
-        }
-    };
-
-    // Use std::sync::mpsc so the sync TUI can call try_recv directly
-    let (tx, mut rx) = mpsc::channel::<String>();
-
-    // Load initial tail
-    let mut initial_logs: Vec<String> = Vec::new();
-    if let Ok(content) = std::fs::read_to_string(&log_file) {
-        let lines: Vec<&str> = content.lines().collect();
-        let start = lines.len().saturating_sub(initial_lines);
-        for line in lines.into_iter().skip(start) {
-            initial_logs.push(line.to_string());
-        }
-    }
-
-    // Spawn async tailing task — sends new lines through the sync channel
-    let log_file_clone = log_file.clone();
-    let tail_handle = tokio::spawn(async move {
-        if let Ok(file) = File::open(&log_file_clone).await 
-            && let Ok(metadata) = file.metadata().await 
-        {
-            let mut reader = BufReader::new(file);
-            let _ = reader.seek(std::io::SeekFrom::Start(metadata.len())).await;
-            let mut buf = String::new();
-            loop {
-                buf.clear();
-                match reader.read_line(&mut buf).await {
-                    Ok(0) => tokio::time::sleep(Duration::from_millis(200)).await,
-                    Ok(_) => {
-                        let line = buf.trim_end().to_string();
-                        if !line.is_empty() && tx.send(line).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
-                }
-            }
-        }
-    });
-
-    let file_label = log_file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("zenclaw.log");
-
-    // Delegate all TUI rendering to tui_menu (DRY)
-    crate::tui_menu::run_tui_log_viewer(initial_logs, &mut rx, file_label).ok();
-
-    tail_handle.abort();
-    Ok(())
-}
 

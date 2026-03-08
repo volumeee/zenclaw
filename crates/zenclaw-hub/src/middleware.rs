@@ -56,11 +56,19 @@ pub async fn rate_limit_middleware(
     next: Next,
 ) -> Response {
     // Use IP or API key as rate limit key
-    let key = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string();
+    let key = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .or_else(|| {
+            // Fallback to strict X-Forwarded-For parsing (take the first valid IP)
+            headers
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.split(',').next()) // Take first IP
+                .map(|s| s.trim().to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Simple in-memory rate limiter (60 req/min)
     static LIMITER: std::sync::OnceLock<RateLimiter> = std::sync::OnceLock::new();
@@ -89,11 +97,10 @@ pub async fn auth_middleware(
     let expected_key = std::env::var("ZENCLAW_API_KEY").ok();
 
     // If no API key set, allow all requests
-    if expected_key.is_none() {
-        return next.run(request).await;
-    }
-
-    let expected = expected_key.unwrap();
+    let expected = match expected_key {
+        Some(key) => key,
+        None => return next.run(request).await,
+    };
 
     // Check Authorization header
     let auth = headers
@@ -144,4 +151,137 @@ pub async fn logging_middleware(request: Request<Body>, next: Next) -> Response 
     );
 
     response
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, routing::get, Router, http::{Request, StatusCode}};
+    use tower::ServiceExt;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    async fn dummy_handler() -> &'static str {
+        "ok"
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_no_key_configured() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Clear environment key
+        unsafe { std::env::remove_var("ZENCLAW_API_KEY"); }
+
+        let app = Router::new()
+            .route("/", get(dummy_handler))
+            .layer(axum::middleware::from_fn(auth_middleware));
+
+        let res = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        // Should allow request without token because ZENCLAW_API_KEY is unset
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_with_key() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        // Set environment key
+        unsafe { std::env::set_var("ZENCLAW_API_KEY", "test-secret-key"); }
+
+        let app = Router::new()
+            .route("/", get(dummy_handler))
+            .layer(axum::middleware::from_fn(auth_middleware));
+
+        // 1. No auth header should fail
+        let res1 = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res1.status(), StatusCode::UNAUTHORIZED);
+
+        // 2. Wrong Bearer token should fail
+        let res2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("authorization", "Bearer wrong-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::UNAUTHORIZED);
+
+        // 3. Correct Bearer token should succeed
+        let res3 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("authorization", "Bearer test-secret-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res3.status(), StatusCode::OK);
+
+        // 4. Correct X-API-Key should succeed
+        let res4 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-api-key", "test-secret-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res4.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware() {
+        let app = Router::new()
+            .route("/", get(dummy_handler))
+            .layer(axum::middleware::from_fn(rate_limit_middleware));
+
+        let unique_ip = "192.168.0.99";
+
+        // Send max_requests (60)
+        for _ in 0..60 {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/")
+                        // Use unique IP via X-Forwarded-For so it doesn't collide with other tests
+                        .header("x-forwarded-for", unique_ip)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+
+        // The 61st request should be rate-limited
+        let res_limited = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-forwarded-for", unique_ip)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_limited.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
 }

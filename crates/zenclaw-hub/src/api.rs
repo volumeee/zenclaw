@@ -310,3 +310,80 @@ pub async fn start_server_from_state(state: ApiState, host: &str, port: u16) -> 
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt; // For collecting the body stream
+    use tower::ServiceExt; // for oneshot
+    use zenclaw_core::error::ZenClawError;
+    use zenclaw_core::message::{ChatMessage, LlmResponse};
+    use zenclaw_core::provider::{ChatRequest as ProviderChatRequest, LlmProvider};
+    use zenclaw_core::memory::InMemoryStore;
+    use zenclaw_core::agent::Agent;
+
+    struct ErrorMockProvider;
+
+    #[async_trait]
+    impl LlmProvider for ErrorMockProvider {
+        fn name(&self) -> &str {
+            "error-mock"
+        }
+
+        fn default_model(&self) -> &str {
+            "mock-model"
+        }
+
+        async fn chat(&self, _request: ProviderChatRequest) -> zenclaw_core::error::Result<LlmResponse> {
+            Err(ZenClawError::Provider("simulated provider error".to_string()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_chat_stream_error_envelope() {
+        let agent = Arc::new(Agent::new());
+        let provider = Arc::new(ErrorMockProvider);
+        let memory = Arc::new(InMemoryStore::new());
+
+        let state = ApiState {
+            agent,
+            provider,
+            memory,
+            rag: None,
+        };
+
+        let app = build_router(Arc::new(Mutex::new(state)));
+
+        let req_body = r#"{ "message": "Hello", "session": "test-session" }"#;
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/stream")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(req_body.as_bytes()))
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let mut res_body = res.into_body();
+        let mut body_str = String::new();
+        
+        while let Some(frame_result) = res_body.frame().await {
+            let frame = frame_result.unwrap();
+            if let Some(chunk) = frame.data_ref() {
+                let s = String::from_utf8(chunk.to_vec()).unwrap();
+                println!("Got chunk: {}", s);
+                body_str.push_str(&s);
+            }
+        }
+
+        // Check that the error event contains the correct JSON serialized envelope
+        assert!(body_str.contains("event: error"));
+        assert!(body_str.contains(r#""code":"PROVIDER_ERROR""#));
+        assert!(body_str.contains("simulated provider error"));
+    }
+}

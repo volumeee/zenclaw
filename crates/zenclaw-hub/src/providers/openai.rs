@@ -278,8 +278,14 @@ impl LlmProvider for OpenAiProvider {
 
         let api_key = self.config.api_key.as_deref().unwrap_or("");
         
-        // Debug the exact payload we are sending to the API gateway (especially the tool calls/results)
-        debug!("Request Messages Payload: {}", serde_json::to_string(&body.messages).unwrap());
+        let msg_summary: Vec<String> = body.messages.iter()
+            .map(|m| {
+                let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let has_content = m.get("content").is_some_and(|v| !v.is_null() && (v.is_string() && !v.as_str().unwrap().is_empty() || v.is_array() && !v.as_array().unwrap().is_empty()));
+                format!("role:{},content:{}", role, has_content)
+            }).collect();
+            
+        debug!("Request Messages Summary: count={}, [{}]", body.messages.len(), msg_summary.join(", "));
 
         debug!(
             "Sending request to {} with {} tools, tool_choice={:?}",

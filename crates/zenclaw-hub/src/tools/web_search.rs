@@ -54,10 +54,11 @@ pub fn percent_encode(s: &str) -> String {
 pub struct WebSearchTool {
     client: Client,
     max_results: usize,
+    jina_api_key: Option<String>,
 }
 
 impl WebSearchTool {
-    pub fn new() -> Self {
+    pub fn new(jina_api_key: Option<String>) -> Self {
         let ua = pick_user_agent();
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(20))
@@ -66,13 +67,13 @@ impl WebSearchTool {
             .build()
             .unwrap_or_default();
 
-        Self { client, max_results: 8 }
+        Self { client, max_results: 8, jina_api_key }
     }
 }
 
 impl Default for WebSearchTool {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -191,7 +192,7 @@ impl Tool for WebSearchTool {
             let mut req = self.client.get(&jina_url)
                 .header("Accept", "text/plain");
                 
-            if let Ok(key) = std::env::var("JINA_API_KEY") {
+            if let Some(ref key) = self.jina_api_key {
                 req = req.header("Authorization", format!("Bearer {}", key));
             }
 
@@ -230,7 +231,7 @@ impl Tool for WebSearchTool {
         }
 
         if output.trim().is_empty() {
-            let jina_hint = if std::env::var("JINA_API_KEY").is_err() {
+            let jina_hint = if self.jina_api_key.is_none() {
                 "\n• ⚠️ JINA_API_KEY is NOT configured! Jina Search (the most reliable engine) is disabled. \
                  Ask the user to set it via: Settings → Set JINA_API_KEY, or `zenclaw config set jina_api_key <KEY>`"
             } else {
@@ -249,7 +250,7 @@ impl Tool for WebSearchTool {
 
         // Always append engine diagnostics to help AI understand result quality
         if !jina_ok {
-            if std::env::var("JINA_API_KEY").is_err() {
+            if self.jina_api_key.is_none() {
                 output.push_str("\n---\n⚠️ JINA_API_KEY is NOT configured. Jina Search (most reliable) is disabled. \
                 Ask the user to configure it via: Settings → Set JINA_API_KEY\n");
             } else {
@@ -355,7 +356,7 @@ impl WebSearchTool {
             req = req.header("X-Locale", locale);
         }
 
-        if let Ok(key) = std::env::var("JINA_API_KEY") {
+        if let Some(ref key) = self.jina_api_key {
             req = req.header("Authorization", format!("Bearer {}", key));
         }
 
@@ -373,7 +374,7 @@ impl WebSearchTool {
         if !status.is_success() {
             let body_preview = resp.text().await.unwrap_or_default();
             let preview = if body_preview.len() > 300 { &body_preview[..300] } else { &body_preview };
-            let has_key = std::env::var("JINA_API_KEY").is_ok();
+            let has_key = self.jina_api_key.is_some();
             
             if status.as_u16() == 401 || status.as_u16() == 403 {
                 tracing::error!(

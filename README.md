@@ -212,12 +212,20 @@ node bridge.js  # The terminal will display a QR Code. Scan it with WhatsApp!
 
 _(Tip: PM2 is highly recommended for running `bridge.js` in production)._
 
-**2. Start the ZenClaw WhatsApp Hook:**
-
 ```bash
 # In another terminal window
 zenclaw whatsapp --bridge http://localhost:3001
 ```
+
+### Mode E: Production Deployment Security Baseline
+
+When deploying ZenClaw in a production environment (such as a VPS serving the REST API or Telegram bots), adhere to the following security baseline:
+
+1. **Reverse Proxy & TLS**: Never expose the ZenClaw `serve` API (port 3000) directly to the internet. Use a reverse proxy like **Nginx** or **Caddy** to handle SSL/TLS termination and provide an initial layer of request sanitization.
+2. **Rate Limiting**: Configure strict IP-based rate limiting at the reverse proxy level to prevent abuse before traffic hits ZenClaw's internal middleware.
+3. **Secret Management**: Do not bake API keys into Docker images. Use a secure environment variable injector or mount the `~/.config/zenclaw/config.toml` file at runtime using your platform's secret manager. 
+4. **Bridge Isolation**: If using the Node.js bridge for WhatsApp or Web Scraping, run the bridge on `127.0.0.1` and ensure it is heavily firewall-restricted so external actors cannot access the Chromium debugging ports.
+5. **Least Privilege**: Run the ZenClaw binary under a dedicated, unprivileged user account.
 
 ---
 

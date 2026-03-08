@@ -15,6 +15,7 @@ use zenclaw_core::tool::Tool;
 pub struct SkillsMpTool {
     client: Client,
     api_key: String,
+    jina_api_key: Option<String>,
 }
 
 impl SkillsMpTool {
@@ -26,11 +27,13 @@ impl SkillsMpTool {
             .unwrap_or_default();
 
         let api_key = config
-            .and_then(|c| c.skillsmp_api_key)
-            .or_else(|| std::env::var("SKILLSMP_API_KEY").ok())
+            .as_ref()
+            .and_then(|c| c.skillsmp_api_key.clone())
             .unwrap_or_default();
 
-        Self { client, api_key }
+        let jina_api_key = config.and_then(|c| c.jina_api_key);
+
+        Self { client, api_key, jina_api_key }
     }
 }
 
@@ -151,7 +154,7 @@ impl Tool for SkillsMpTool {
         let mut read_req = self.client.get(&read_url)
             .header("X-Return-Format", "markdown");
             
-        let jina_key_env = std::env::var("JINA_API_KEY").unwrap_or_default();
+        let jina_key_env = self.jina_api_key.as_deref().unwrap_or("");
         if !jina_key_env.is_empty() {
             read_req = read_req.header("Authorization", format!("Bearer {}", jina_key_env));
         }

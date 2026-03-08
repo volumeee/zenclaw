@@ -9,11 +9,12 @@ use zenclaw_core::tool::Tool;
 
 pub struct WebScrapeTool {
     client: Client,
+    jina_api_key: Option<String>,
 }
 
 
 impl WebScrapeTool {
-    pub fn new() -> Self {
+    pub fn new(jina_api_key: Option<String>) -> Self {
         Self {
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(45))
@@ -21,13 +22,14 @@ impl WebScrapeTool {
                 .tcp_keepalive(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_default(),
+            jina_api_key,
         }
     }
 }
 
 impl Default for WebScrapeTool {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
     }
 }
 
@@ -93,7 +95,7 @@ impl Tool for WebScrapeTool {
         let mut request = self.client.get(&target_url)
             .header("X-Return-Format", "markdown");
 
-        if let Ok(key) = std::env::var("JINA_API_KEY") {
+        if let Some(ref key) = self.jina_api_key {
             request = request.header("Authorization", format!("Bearer {}", key));
         }
 
@@ -102,7 +104,7 @@ impl Tool for WebScrapeTool {
                 let status = resp.status();
                 if !status.is_success() {
                     if status.as_u16() == 401 || status.as_u16() == 403 {
-                        let has_key = std::env::var("JINA_API_KEY").is_ok();
+                        let has_key = self.jina_api_key.is_some();
                         tracing::error!(
                             "Jina Reader AUTH FAILED (status {}). Key configured: {}. The API key may be invalid or expired.",
                             status, has_key
@@ -202,7 +204,7 @@ impl Tool for WebScrapeTool {
                 }
             }
             Err(e) => {
-                let jina_hint = if std::env::var("JINA_API_KEY").is_err() {
+                let jina_hint = if self.jina_api_key.is_none() {
                     " ⚠️ JINA_API_KEY is NOT set — Jina Reader requires authentication. Ask user to configure it via Settings → Set JINA_API_KEY."
                 } else {
                     ""
